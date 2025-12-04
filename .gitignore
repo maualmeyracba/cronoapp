@@ -1,19 +1,24 @@
-# Directorios de dependencias
-/node_modules
-/apps/functions/node_modules
-/apps/web/node_modules
-
-# Archivos de compilación de TypeScript/JavaScript
-/apps/functions/lib
-/apps/web/dist
-/apps/web/out
-
-# Archivos de caché y logs
+# Logs
+logs
 *.log
-.firebase/*.cache
 npm-debug.log*
-yarn-error.log
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Archivos de entorno y credenciales (Nunca subir)
-.env
-.env.*
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

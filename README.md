@@ -1,38 +1,16 @@
-# ⏱️ CronoApp: Sistema de Gestión y Programación Horaria
+# React + Vite
 
-[![Estado del Proyecto](https://img.shields.io/badge/Estado-Desarrollo-blue.svg)](URL_del_Proyecto)
-[![Tecnología Principal](https://img.shields.io/badge/Stack-Node.js%20%7C%20Firebase-green.svg)](URL_de_Firebase)
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## Descripción del Proyecto
+Currently, two official plugins are available:
 
-**CronoApp** es una aplicación modular de gestión de recursos diseñada para automatizar la programación de horarios, el seguimiento de la asistencia y la administración de datos de empleados y clientes.
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-La aplicación se compone de:
+## React Compiler
 
-1.  **`apps/functions`**: El Backend, implementado con **TypeScript** y desplegado como **Cloud Functions para Firebase**. Contiene la lógica de negocio, incluyendo servicios de autenticación, gestión de datos (clientes, empleados, ausencias) y módulos de programación y auditoría.
-2.  **`apps/web`**: El Frontend (aplicación web) que interactúa con las funciones del backend y sirve la interfaz de usuario.
-3.  **Configuración Firebase**: Maneja el hosting, la base de datos (Firestore) y las funciones del servidor.
+The React Compiler is currently not compatible with SWC. See [this issue](https://github.com/vitejs/vite-plugin-react/issues/428) for tracking the progress.
 
-## 🛠️ Tecnologías Utilizadas
+## Expanding the ESLint configuration
 
-* **Backend**: Node.js, TypeScript
-* **Servicios Cloud**: Firebase Cloud Functions, Firestore, Firebase Hosting, Authentication
-* **Dependencias de Gestión**: (Menciona si usas NestJS, Express, o librerías clave de gestión de tiempo)
-
-## 🚀 Instalación y Configuración Local
-
-Sigue estos pasos para levantar el proyecto en tu entorno de desarrollo.
-
-### 1. Requisitos Previos
-
-* Node.js (versión LTS recomendada)
-* npm o yarn (se recomienda usar `npm`)
-* Firebase CLI (Instalación: `npm install -g firebase-tools`)
-
-### 2. Clonar el Repositorio (Si es la primera vez)
-
-Si tu proyecto ya está en GitHub:
-
-```bash
-git clone [https://github.com/maualmeyracba/cronoapp.gitO]
-cd cronoapp
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.

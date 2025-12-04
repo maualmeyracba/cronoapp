@@ -1,45 +1,77 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { IEmployee } from '../common/interfaces/employee.interface';
 
+const COLL_EMPLOYEES = 'empleados';
+
 @Injectable()
 export class EmployeeService {
-  // Inicialización diferida del DB
+  // Inicialización diferida
   private getDb = () => admin.app().firestore();
-  private readonly collectionName = 'empleados';
+  private getAuth = () => admin.app().auth();
 
   /**
-   * Obtiene la lista de empleados.
-   * 🛑 CAMBIO: Soporta filtrado por 'clientId' para multi-tenancy.
-   * @param clientId (Opcional) ID de la empresa para filtrar.
+   * Obtiene empleados, opcionalmente filtrados por empresa.
+   * 🛑 FIX: Aceptamos el argumento clientId para que index.ts no falle.
    */
   async findAllEmployees(clientId?: string): Promise<IEmployee[]> {
-    const db = this.getDb();
-    let query: admin.firestore.Query = db.collection(this.collectionName);
+    try {
+      const db = this.getDb();
+      let query: admin.firestore.Query = db.collection(COLL_EMPLOYEES);
 
-    // Si se provee un clientId, aplicamos el filtro
-    if (clientId) {
-        query = query.where('clientId', '==', clientId);
+      // Si se provee un clientId, filtramos la consulta
+      if (clientId) {
+          query = query.where('clientId', '==', clientId);
+      }
+
+      const snapshot = await query.get();
+      
+      return snapshot.docs.map(doc => {
+          const data = doc.data();
+          return { 
+              uid: doc.id, 
+              ...data 
+          } as IEmployee;
+      });
+    } catch (error) {
+      console.error('[GET_EMPLOYEES_ERROR]', error);
+      throw new InternalServerErrorException('Error al obtener la lista de empleados.');
     }
-
-    const snapshot = await query.get();
-    
-    return snapshot.docs.map(doc => {
-        const data = doc.data();
-        return { 
-            uid: doc.id, 
-            ...data 
-        } as IEmployee;
-    });
   }
 
   async updateEmployee(uid: string, data: Partial<IEmployee>): Promise<void> {
     const db = this.getDb();
-    await db.collection(this.collectionName).doc(uid).update(data);
+    const auth = this.getAuth();
+    const ref = db.collection(COLL_EMPLOYEES).doc(uid);
+    const doc = await ref.get();
+    
+    if (!doc.exists) throw new NotFoundException('Empleado no encontrado.');
+
+    // Protegemos campos críticos
+    const safeData = { ...data };
+    delete (safeData as any).uid;
+    delete (safeData as any).email;
+    
+    await ref.update(safeData);
+
+    // Sincronizar Rol en Auth si cambia
+    if (data.role) {
+        try {
+            await auth.setCustomUserClaims(uid, { role: data.role });
+        } catch (e) {
+            console.error(`Error actualizando claims para ${uid}`, e);
+        }
+    }
   }
 
   async deleteEmployee(uid: string): Promise<void> {
-    const db = this.getDb();
-    await db.collection(this.collectionName).doc(uid).delete();
+    try {
+        // Borrado completo: Auth + Firestore
+        await this.getAuth().deleteUser(uid);
+        await this.getDb().collection(COLL_EMPLOYEES).doc(uid).delete();
+    } catch (error) {
+        console.error('[DELETE_EMPLOYEE_ERROR]', error);
+        throw new InternalServerErrorException('Error al eliminar el empleado.');
+    }
   }
 }

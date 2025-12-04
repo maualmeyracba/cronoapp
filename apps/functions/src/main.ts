@@ -3,17 +3,15 @@ import { AppModule } from './app.module';
 import { INestApplicationContext } from '@nestjs/common';
 
 /**
- * Crea el contexto de la aplicación NestJS sin levantar un servidor HTTP.
- * Esto es estrictamente lo que Cloud Functions necesita para poder inyectar servicios
- * como EmployeeService o AbsenceService dentro de las funciones 'onCall'.
+ * @async
+ * @function createNestApp
+ * @description Inicializa la aplicación NestJS y retorna el Módulo de Referencia.
+ * @returns {Promise<INestApplicationContext>} El contexto de aplicación.
  */
-export const createNestApp = async (): Promise<INestApplicationContext> => {
-  // 🛑 USAMOS createApplicationContext EN LUGAR DE create()
-  // Esto inicia el motor de NestJS pero no ocupa puertos ni sockets.
-  const app = await NestFactory.createApplicationContext(AppModule);
+export async function createNestApp(): Promise<INestApplicationContext> {
+  // Usamos createApplicationContext para obtener el contexto de DI sin listener HTTP
+  const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
   
-  // Si tienes inicializaciones globales (como validadores), van aquí.
-  // Pero NUNCA llames a app.listen() en este archivo para Cloud Functions.
-  
+  await app.init();
   return app;
-};
+}

@@ -10,29 +10,29 @@ const SHIFTS_COLLECTION = 'turnos';
 
 @Injectable()
 export class WorkloadService {
-  
   private getDb = () => admin.app().firestore();
 
   async validateAssignment(employeeId: string, shiftStart: Date, shiftEnd: Date): Promise<void> {
     const db = this.getDb();
     const empDoc = await db.collection(EMPLOYEES_COLLECTION).doc(employeeId).get();
+    
     if (!empDoc.exists) throw new BadRequestException('Employee not found');
     const employee = empDoc.data() as IEmployee;
 
-    // REGLA 1: Solapamiento Técnico
+    // 1. Solapamiento (Llama al método nuevo)
     const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd);
     if (conflicts.length > 0) {
         throw new ConflictException('SOLAPAMIENTO DETECTADO: El empleado ya tiene un turno asignado en este período.');
     }
 
-    // REGLA 2: Disponibilidad
+    // 2. Disponibilidad
     await this.checkAvailability(employeeId, shiftStart, shiftEnd);
 
-    // REGLA 3: Límite Mensual
+    // 3. Límite Mensual
     await this.checkMonthlyLimit(employee, shiftStart, shiftEnd);
   }
 
-  // 🛑 MÉTODO checkShiftOverlap (Requerido por AbsenceService)
+  // 🛑 MÉTODO QUE FALTABA EN TU CÓDIGO
   async checkShiftOverlap(employeeId: string, start: Date, end: Date): Promise<IShift[]> {
     const db = this.getDb();
     const shiftsQuery = db.collection(SHIFTS_COLLECTION)
@@ -47,7 +47,7 @@ export class WorkloadService {
         const sStart = (shift.startTime as admin.firestore.Timestamp).toDate();
         
         if (sStart.getTime() < end.getTime()) {
-             // 🛑 FIX TIPADO: 'as unknown as IShift' resuelve el conflicto con Timestamp
+             // Doble casting para evitar error de tipos
              conflictingShifts.push({ id: doc.id, ...shift } as unknown as IShift);
         }
     });
