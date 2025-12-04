@@ -10,15 +10,11 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RolesGuard = exports.Roles = exports.ROLES_KEY = void 0;
-// apps/functions/src/auth/guards/roles.guard.ts
 const common_1 = require("@nestjs/common");
 const core_1 = require("@nestjs/core");
 require("reflect-metadata");
-// ... (resto del código permanece igual)
-// 1. Decorador para definir los roles requeridos
 exports.ROLES_KEY = 'roles';
 const Roles = (...roles) => (target, key, descriptor) => {
-    // Uso corregido de Reflect (Solución TS2339)
     Reflect.defineMetadata(exports.ROLES_KEY, roles, descriptor.value || target);
 };
 exports.Roles = Roles;

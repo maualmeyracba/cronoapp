@@ -9,11 +9,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AuthModule = void 0;
 const common_1 = require("@nestjs/common");
 const auth_service_1 = require("./auth.service");
-/**
- * @module AuthModule
- * @description Módulo encargado de la creación de usuarios, asignación de roles (Custom Claims)
- * y gestión de perfiles en la colección 'empleados'.
- */
 let AuthModule = class AuthModule {
 };
 exports.AuthModule = AuthModule;
@@ -21,7 +16,7 @@ exports.AuthModule = AuthModule = __decorate([
     (0, common_1.Module)({
         imports: [],
         providers: [auth_service_1.AuthService],
-        exports: [auth_service_1.AuthService], // Exportamos el servicio para que otros módulos lo utilicen.
+        exports: [auth_service_1.AuthService],
     })
 ], AuthModule);
 //# sourceMappingURL=auth.module.js.map

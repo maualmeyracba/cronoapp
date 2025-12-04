@@ -1,8 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SchedulingService } from './scheduling.service';
 import { ShiftOverlapService } from './shift-overlap.service';
-// 🛑 Importamos el nuevo servicio de reglas de negocio
-import { WorkloadService } from '../scheduling/workload.service';
+import { WorkloadService } from './workload.service';
 
 /**
  * @module SchedulingModule
@@ -16,6 +15,9 @@ import { WorkloadService } from '../scheduling/workload.service';
     ShiftOverlapService,    // Validador de Solapamiento (P2)
     WorkloadService         // Validador de Carga/Ausencias (Reglas de Negocio)
   ],
-  exports: [SchedulingService], // Exportamos el servicio principal para usarlo en index.ts
+  exports: [
+    SchedulingService,      // Exportamos el servicio principal
+    WorkloadService         // 👈 CORRECCIÓN: Exportamos WorkloadService para que AbsenceService lo pueda usar
+  ],
 })
 export class SchedulingModule {}

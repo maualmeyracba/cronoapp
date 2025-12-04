@@ -10,13 +10,7 @@ exports.SchedulingModule = void 0;
 const common_1 = require("@nestjs/common");
 const scheduling_service_1 = require("./scheduling.service");
 const shift_overlap_service_1 = require("./shift-overlap.service");
-// 🛑 Importamos el nuevo servicio de reglas de negocio
-const workload_service_1 = require("../scheduling/workload.service");
-/**
- * @module SchedulingModule
- * @description Módulo de NestJS para toda la lógica de agendamiento de turnos.
- * Agrupa los servicios de asignación, validación de solapamiento y carga de trabajo.
- */
+const workload_service_1 = require("./workload.service");
 let SchedulingModule = class SchedulingModule {
 };
 exports.SchedulingModule = SchedulingModule;
@@ -24,11 +18,14 @@ exports.SchedulingModule = SchedulingModule = __decorate([
     (0, common_1.Module)({
         imports: [],
         providers: [
-            scheduling_service_1.SchedulingService, // Servicio Principal
-            shift_overlap_service_1.ShiftOverlapService, // Validador de Solapamiento (P2)
-            workload_service_1.WorkloadService // Validador de Carga/Ausencias (Reglas de Negocio)
+            scheduling_service_1.SchedulingService,
+            shift_overlap_service_1.ShiftOverlapService,
+            workload_service_1.WorkloadService
         ],
-        exports: [scheduling_service_1.SchedulingService], // Exportamos el servicio principal para usarlo en index.ts
+        exports: [
+            scheduling_service_1.SchedulingService,
+            workload_service_1.WorkloadService
+        ],
     })
 ], SchedulingModule);
 //# sourceMappingURL=scheduling.module.js.map

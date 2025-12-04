@@ -11,25 +11,30 @@ const common_1 = require("@nestjs/common");
 const data_management_service_1 = require("./data-management.service");
 const client_service_1 = require("./client.service");
 const employee_service_1 = require("./employee.service");
-// 🛑 Importamos el nuevo servicio de usuarios del sistema
 const system_user_service_1 = require("./system-user.service");
+const absence_service_1 = require("./absence.service");
+const scheduling_module_1 = require("../scheduling/scheduling.module");
 let DataManagementModule = class DataManagementModule {
 };
 exports.DataManagementModule = DataManagementModule;
 exports.DataManagementModule = DataManagementModule = __decorate([
     (0, common_1.Module)({
-        imports: [],
+        imports: [
+            scheduling_module_1.SchedulingModule
+        ],
         providers: [
-            data_management_service_1.DataManagementService, // Objetivos básicos (Legacy)
-            client_service_1.ClientService, // Jerarquía Comercial
-            employee_service_1.EmployeeService, // RRHH (Operativos)
-            system_user_service_1.SystemUserService // 🛑 Gestión de Admins (Back-Office)
+            data_management_service_1.DataManagementService,
+            client_service_1.ClientService,
+            employee_service_1.EmployeeService,
+            system_user_service_1.SystemUserService,
+            absence_service_1.AbsenceService
         ],
         exports: [
             data_management_service_1.DataManagementService,
             client_service_1.ClientService,
             employee_service_1.EmployeeService,
-            system_user_service_1.SystemUserService // 🛑 Exportar para usar en index.ts
+            system_user_service_1.SystemUserService,
+            absence_service_1.AbsenceService
         ],
     })
 ], DataManagementModule);

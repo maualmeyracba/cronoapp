@@ -1,0 +1,10 @@
+import * as functions from 'firebase-functions';
+export declare const createUser: functions.HttpsFunction & functions.Runnable<any>;
+export declare const scheduleShift: functions.HttpsFunction & functions.Runnable<any>;
+export declare const auditShift: functions.HttpsFunction & functions.Runnable<any>;
+export declare const manageData: functions.HttpsFunction & functions.Runnable<any>;
+export declare const manageHierarchy: functions.HttpsFunction & functions.Runnable<any>;
+export declare const manageEmployees: functions.HttpsFunction & functions.Runnable<any>;
+export declare const manageSystemUsers: functions.HttpsFunction & functions.Runnable<any>;
+export declare const manageAbsences: functions.HttpsFunction & functions.Runnable<any>;
+export declare const checkSystemHealth: functions.HttpsFunction & functions.Runnable<any>;

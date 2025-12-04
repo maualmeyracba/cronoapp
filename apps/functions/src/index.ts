@@ -1,6 +1,3 @@
-// 🛑 IMPORTACIÓN OBLIGATORIA
-import 'reflect-metadata'; 
-
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { createNestApp } from './main';
@@ -14,46 +11,169 @@ import { AuditService } from './scheduling/audit.service';
 import { ClientService } from './data-management/client.service';
 import { EmployeeService } from './data-management/employee.service';
 import { SystemUserService } from './data-management/system-user.service';
+// 👇 IMPORTANTE: Servicio de Ausencias
 import { AbsenceService } from './data-management/absence.service';
+
+// Interfaces
 import { EmployeeRole } from './common/interfaces/employee.interface';
 
-if (admin.apps.length === 0) {
-  admin.initializeApp();
-}
+// Inicialización
+admin.initializeApp();
 
 let nestApp: INestApplicationContext;
 
 async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
-  try {
-    if (!nestApp) nestApp = await createNestApp();
-    return nestApp.get<T>(service); 
-  } catch (error) {
-    console.error("🔥 [Backend] ERROR FATAL AL INICIAR NESTJS:", error);
-    throw new functions.https.HttpsError('internal', 'Error crítico de inicio.');
+  if (!nestApp) {
+    nestApp = await createNestApp();
   }
+  return nestApp.get<T>(service); 
 }
 
+// Roles Administrativos
 const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager'];
-const ALLOWED_ROLES: any[] = ['admin', 'employee']; 
+const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee']; 
 
-// ... (Funciones 1 a 5: createUser, scheduleShift, auditShift, manageData, manageHierarchy se mantienen igual) ...
-// NOTA: Asegúrate de mantener las funciones anteriores aquí.
+// =========================================================
+// 1. GESTIÓN DE USUARIOS (AUTH)
+// =========================================================
+export const createUser = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. Rol insuficiente.');
+  }
+
+  try {
+    const authService = await getService(AuthService);
+    const { email, password, name, role: receivedRole } = data;
+    
+    if (!ALLOWED_ROLES.includes(receivedRole as EmployeeRole)) {
+       throw new functions.https.HttpsError('invalid-argument', 'Rol inválido.');
+    }
+    const validRole = receivedRole as EmployeeRole;
+    const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name);
+    return { success: true, uid: newEmployee.uid };
+  } catch (error: any) {
+    const err = error as Error;
+    if (error instanceof functions.https.HttpsError) throw error;
+    console.error('[CREATE_USER_FATAL]', err.message);
+    throw new functions.https.HttpsError('internal', 'Error al crear usuario.');
+  }
+});
+
+// =========================================================
+// 2. MOTOR DE AGENDAMIENTO
+// =========================================================
+export const scheduleShift = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. Rol insuficiente.');
+  }
+
+  try {
+    const schedulingService = await getService(SchedulingService);
+    const result = await schedulingService.assignShift(data, callerAuth.token);
+    return { success: true, shiftId: result.id };
+  } catch (error: any) {
+    const err = error as Error;
+    if (error instanceof functions.https.HttpsError) throw error;
+    console.error('[SCHEDULE_SHIFT_FATAL]', err.message);
+    throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
+  }
+});
+
+// =========================================================
+// 3. AUDITORÍA (GEOFENCING)
+// =========================================================
+export const auditShift = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
+
+  try {
+    const auditService = await getService(AuditService);
+    const result = await auditService.auditShiftAction(data.shiftId, data.action, data.coords, context.auth.uid);
+    return { success: true, newStatus: result.status };
+  } catch (error: any) {
+    const err = error as Error;
+    if (error instanceof functions.https.HttpsError) throw error;
+    console.error('[AUDIT_SHIFT_FATAL]', err.message);
+    throw new functions.https.HttpsError('internal', err.message);
+  }
+});
+
+// =========================================================
+// 4. GESTIÓN DE DATOS BÁSICOS
+// =========================================================
+export const manageData = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  }
+
+  const { action, payload } = data;
+  try {
+    const dmService = await getService(DataManagementService);
+    switch (action) {
+      case 'CREATE_OBJECTIVE': return { success: true, data: await dmService.createObjective(payload) };
+      case 'GET_ALL_OBJECTIVES': return { success: true, data: await dmService.findAllObjectives(payload?.clientId) };
+      case 'GET_CLIENT_BY_ID': return { success: true, data: await dmService.getClientById(payload.clientId) };
+      default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+    }
+  } catch (error: any) {
+    const err = error as Error;
+    if (error instanceof functions.https.HttpsError) throw error;
+    console.error('[DATA_MANAGEMENT_FATAL]', err.message);
+    throw new functions.https.HttpsError('internal', err.message);
+  }
+});
+
+// =========================================================
+// 5. GESTIÓN DE JERARQUÍA COMERCIAL
+// =========================================================
+export const manageHierarchy = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  }
+  
+  const { action, payload } = data as { action: string, payload: any };
+
+  try {
+    const clientService = await getService(ClientService);
+
+    switch (action) {
+      case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
+      case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
+      case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
+      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
+      case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
+      case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
+      case 'CREATE_CONTRACT': return { success: true, data: await clientService.createServiceContract(payload) };
+      case 'CREATE_SHIFT_TYPE': return { success: true, data: await clientService.createShiftType(payload) };
+      case 'GET_SHIFT_TYPES': return { success: true, data: await clientService.getShiftTypesByContract(payload.contractId) };
+      default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+    }
+  } catch (error: any) {
+    const err = error as Error;
+    console.error(`[HIERARCHY_ERROR] Action ${action} failed:`, err.message);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
+  }
+});
 
 // =========================================================
 // 6. GESTIÓN DE EMPLEADOS (RRHH)
 // =========================================================
-export const manageEmployees = functions.https.onCall(async (data: any, context: any) => {
+export const manageEmployees = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
-  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
     throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
   }
   
-  const { action, payload } = data;
+  const { action, payload } = data as { action: string, payload: any };
   try {
     const employeeService = await getService(EmployeeService);
     switch (action) {
       case 'GET_ALL_EMPLOYEES':
-        // 🛑 AHORA FUNCIONARÁ PORQUE ACTUALIZAMOS EL SERVICIO
+        // 👇 IMPORTANTE: Pasar el clientId recibido en el payload para filtrar
         const employees = await employeeService.findAllEmployees(payload?.clientId);
         return { success: true, data: employees };
       case 'UPDATE_EMPLOYEE':
@@ -65,11 +185,115 @@ export const manageEmployees = functions.https.onCall(async (data: any, context:
       default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
   } catch (error: any) {
+    const err = error as Error;
+    console.error(`[EMPLOYEE_ERROR] Action ${action} failed:`, err.message);
     if (error instanceof functions.https.HttpsError) throw error;
-    console.error(`[EMPLOYEE_ERROR] Action ${action} failed:`, error);
-    throw new functions.https.HttpsError('internal', error.message);
+    throw new functions.https.HttpsError('internal', err.message);
   }
 });
 
-// ... (Funciones 7 y 8: manageAbsences y manageSystemUsers se mantienen igual) ...
-// Asegúrate de mantener manageAbsences y checkSystemHealth aquí.
+// =========================================================
+// 7. GESTIÓN DE USUARIOS DEL SISTEMA (ADMINS)
+// =========================================================
+export const manageSystemUsers = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  }
+  
+  const { action, payload } = data as { action: string, payload: any };
+
+  try {
+    const sysUserService = await getService(SystemUserService);
+
+    switch (action) {
+      case 'CREATE_USER':
+         await sysUserService.createSystemUser(payload);
+        return { success: true, message: 'Administrador creado exitosamente.' };
+      case 'GET_ALL_USERS':
+        const users = await sysUserService.findAll();
+        return { success: true, data: users };
+      case 'UPDATE_USER':
+        await sysUserService.updateSystemUser(payload.uid, payload.data);
+        return { success: true, message: 'Administrador actualizado.' };
+      case 'DELETE_USER':
+        await sysUserService.deleteSystemUser(payload.uid);
+        return { success: true, message: 'Administrador eliminado.' };
+      default:
+        throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+    }
+  } catch (error: any) {
+    const err = error as Error;
+    console.error(`[SYS_USER_ERROR] ${action} failed:`, err.message);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', err.message);
+  }
+});
+
+// =========================================================
+// 8. GESTIÓN DE NOVEDADES (AUSENCIAS)
+// =========================================================
+export const manageAbsences = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  // Validación de Rol
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  }
+
+  const { action, payload } = data as { action: string, payload: any };
+
+  try {
+    const absenceService = await getService(AbsenceService);
+
+    switch (action) {
+      case 'CREATE_ABSENCE':
+        return { success: true, data: await absenceService.createAbsence(payload) };
+      default:
+        throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+    }
+  } catch (error: any) {
+    const err = error as Error;
+    console.error(`[ABSENCE_ERROR] Action ${action} failed:`, err.message);
+    if (error instanceof functions.https.HttpsError) throw error;
+    if (err.message.includes('Conflict')) {
+        throw new functions.https.HttpsError('failed-precondition', err.message);
+    }
+    throw new functions.https.HttpsError('internal', err.message);
+  }
+});
+
+// =========================================================
+// 9. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
+// =========================================================
+export const checkSystemHealth = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
+  }
+
+  const start = Date.now();
+  try {
+    // Prueba de latencia con Firestore (listCollections es ligero)
+    await admin.firestore().listCollections();
+    const end = Date.now();
+
+    return {
+      status: 'ok',
+      nodeVersion: process.version,
+      database: {
+        status: 'connected',
+        latencyMs: end - start
+      }
+    };
+  } catch (error: any) {
+    console.error('[HEALTH_CHECK_ERROR]', error);
+    return {
+      status: 'error',
+      nodeVersion: process.version,
+      database: {
+        status: 'disconnected',
+        latencyMs: -1,
+        error: error.message
+      }
+    };
+  }
+});

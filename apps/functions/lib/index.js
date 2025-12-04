@@ -1,45 +1,9 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.checkSystemHealth = exports.manageSystemUsers = exports.manageAbsences = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.scheduleShift = exports.createUser = void 0;
-// 🛑 LÍNEA 1 OBLIGATORIA: Necesaria para que NestJS funcione en Cloud Functions
-require("reflect-metadata");
-const functions = __importStar(require("firebase-functions"));
-const admin = __importStar(require("firebase-admin"));
+exports.checkSystemHealth = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.scheduleShift = exports.createUser = void 0;
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
 const main_1 = require("./main");
-// Servicios del Sistema
 const scheduling_service_1 = require("./scheduling/scheduling.service");
 const auth_service_1 = require("./auth/auth.service");
 const data_management_service_1 = require("./data-management/data-management.service");
@@ -48,37 +12,16 @@ const client_service_1 = require("./data-management/client.service");
 const employee_service_1 = require("./data-management/employee.service");
 const system_user_service_1 = require("./data-management/system-user.service");
 const absence_service_1 = require("./data-management/absence.service");
-// Inicialización Segura de Firebase Admin
-if (admin.apps.length === 0) {
-    admin.initializeApp();
-}
-// Cache del contexto de NestJS para optimizar arranque en caliente (Warm Starts)
+admin.initializeApp();
 let nestApp;
-/**
- * Helper blindado para obtener servicios de NestJS dentro del contexto de Cloud Functions.
- * Captura y loguea errores de inicio para facilitar el diagnóstico.
- */
 async function getService(service) {
-    try {
-        if (!nestApp) {
-            console.log("⚙️ [Backend] Iniciando NestJS Context...");
-            nestApp = await (0, main_1.createNestApp)();
-            console.log("✅ [Backend] NestJS Context iniciado correctamente.");
-        }
-        return nestApp.get(service);
+    if (!nestApp) {
+        nestApp = await (0, main_1.createNestApp)();
     }
-    catch (error) {
-        console.error("🔥 [Backend] ERROR FATAL AL INICIAR NESTJS (Boot Crash):", error);
-        // Lanzamos un error que Firebase entienda y muestre en el cliente
-        throw new functions.https.HttpsError('internal', 'Error crítico en el servidor al iniciar dependencias.');
-    }
+    return nestApp.get(service);
 }
-// Constantes de Seguridad (RBAC)
 const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager'];
 const ALLOWED_ROLES = ['admin', 'employee'];
-// =========================================================
-// 1. GESTIÓN DE USUARIOS (AUTH)
-// =========================================================
 exports.createUser = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
     if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
@@ -90,23 +33,22 @@ exports.createUser = functions.https.onCall(async (data, context) => {
         if (!ALLOWED_ROLES.includes(receivedRole)) {
             throw new functions.https.HttpsError('invalid-argument', 'Rol inválido.');
         }
-        const newEmployee = await authService.createEmployeeProfile(email, password, receivedRole, name);
+        const validRole = receivedRole;
+        const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name);
         return { success: true, uid: newEmployee.uid };
     }
     catch (error) {
+        const err = error;
         if (error instanceof functions.https.HttpsError)
             throw error;
-        console.error('[CREATE_USER_FATAL]', error);
+        console.error('[CREATE_USER_FATAL]', err.message);
         throw new functions.https.HttpsError('internal', 'Error al crear usuario.');
     }
 });
-// =========================================================
-// 2. MOTOR DE AGENDAMIENTO (WFM)
-// =========================================================
 exports.scheduleShift = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
     if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
-        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. Rol insuficiente.');
     }
     try {
         const schedulingService = await getService(scheduling_service_1.SchedulingService);
@@ -114,19 +56,13 @@ exports.scheduleShift = functions.https.onCall(async (data, context) => {
         return { success: true, shiftId: result.id };
     }
     catch (error) {
+        const err = error;
         if (error instanceof functions.https.HttpsError)
             throw error;
-        // Captura de errores de negocio del WorkloadService
-        if (error.message && (error.message.includes('BLOQUEO:') || error.message.includes('SOLAPAMIENTO DETECTADO:') || error.message.includes('LÍMITE EXCEDIDO:'))) {
-            throw new functions.https.HttpsError('failed-precondition', error.message);
-        }
-        console.error('[SCHEDULE_SHIFT_FATAL]', error);
-        throw new functions.https.HttpsError('internal', `Error: ${error.message}`);
+        console.error('[SCHEDULE_SHIFT_FATAL]', err.message);
+        throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
     }
 });
-// =========================================================
-// 3. AUDITORÍA (GEOFENCING & CHECK-IN/OUT)
-// =========================================================
 exports.auditShift = functions.https.onCall(async (data, context) => {
     if (!context.auth)
         throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
@@ -136,15 +72,13 @@ exports.auditShift = functions.https.onCall(async (data, context) => {
         return { success: true, newStatus: result.status };
     }
     catch (error) {
+        const err = error;
         if (error instanceof functions.https.HttpsError)
             throw error;
-        console.error('[AUDIT_SHIFT_FATAL]', error);
-        throw new functions.https.HttpsError('internal', error.message);
+        console.error('[AUDIT_SHIFT_FATAL]', err.message);
+        throw new functions.https.HttpsError('internal', err.message);
     }
 });
-// =========================================================
-// 4. GESTIÓN DE DATOS BÁSICOS
-// =========================================================
 exports.manageData = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
     if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
@@ -161,15 +95,13 @@ exports.manageData = functions.https.onCall(async (data, context) => {
         }
     }
     catch (error) {
+        const err = error;
         if (error instanceof functions.https.HttpsError)
             throw error;
-        console.error('[DATA_MANAGEMENT_FATAL]', error);
-        throw new functions.https.HttpsError('internal', error.message);
+        console.error('[DATA_MANAGEMENT_FATAL]', err.message);
+        throw new functions.https.HttpsError('internal', err.message);
     }
 });
-// =========================================================
-// 5. GESTIÓN DE JERARQUÍA COMERCIAL
-// =========================================================
 exports.manageHierarchy = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
     if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
@@ -196,15 +128,13 @@ exports.manageHierarchy = functions.https.onCall(async (data, context) => {
         }
     }
     catch (error) {
+        const err = error;
+        console.error(`[HIERARCHY_ERROR] Action ${action} failed:`, err.message);
         if (error instanceof functions.https.HttpsError)
             throw error;
-        console.error(`[HIERARCHY_ERROR] Action ${action} failed:`, error);
-        throw new functions.https.HttpsError('internal', `Error: ${error.message}`);
+        throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
     }
 });
-// =========================================================
-// 6. GESTIÓN DE EMPLEADOS (RRHH)
-// =========================================================
 exports.manageEmployees = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
     if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
@@ -227,46 +157,13 @@ exports.manageEmployees = functions.https.onCall(async (data, context) => {
         }
     }
     catch (error) {
+        const err = error;
+        console.error(`[EMPLOYEE_ERROR] Action ${action} failed:`, err.message);
         if (error instanceof functions.https.HttpsError)
             throw error;
-        console.error(`[EMPLOYEE_ERROR] Action ${action} failed:`, error);
-        throw new functions.https.HttpsError('internal', error.message);
+        throw new functions.https.HttpsError('internal', err.message);
     }
 });
-// =========================================================
-// 7. GESTIÓN DE AUSENCIAS (RRHH)
-// =========================================================
-exports.manageAbsences = functions.https.onCall(async (data, context) => {
-    const callerAuth = context.auth;
-    if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
-        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
-    }
-    const { action, payload } = data;
-    try {
-        const absenceService = await getService(absence_service_1.AbsenceService);
-        if (action === 'CREATE_ABSENCE') {
-            const result = await absenceService.createAbsence(payload);
-            return {
-                success: true,
-                message: 'Ausencia registrada exitosamente.',
-                absenceId: result.id
-            };
-        }
-        throw new functions.https.HttpsError('invalid-argument', 'Acción desconocida.');
-    }
-    catch (error) {
-        if (error instanceof functions.https.HttpsError)
-            throw error;
-        if (error.message && (error.message.includes('Conflict:') || error.message.includes('SOLAPAMIENTO DETECTADO:'))) {
-            throw new functions.https.HttpsError('failed-precondition', error.message);
-        }
-        console.error(`[ABSENCE_ERROR] Action ${action} failed:`, error);
-        throw new functions.https.HttpsError('internal', error.message);
-    }
-});
-// =========================================================
-// 8. GESTIÓN DE USUARIOS DEL SISTEMA
-// =========================================================
 exports.manageSystemUsers = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
     if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
@@ -278,54 +175,82 @@ exports.manageSystemUsers = functions.https.onCall(async (data, context) => {
         switch (action) {
             case 'CREATE_USER':
                 await sysUserService.createSystemUser(payload);
-                return { success: true, message: 'Admin creado.' };
+                return { success: true, message: 'Administrador creado exitosamente.' };
             case 'GET_ALL_USERS':
                 const users = await sysUserService.findAll();
                 return { success: true, data: users };
             case 'UPDATE_USER':
                 await sysUserService.updateSystemUser(payload.uid, payload.data);
-                return { success: true, message: 'Admin actualizado.' };
+                return { success: true, message: 'Administrador actualizado.' };
             case 'DELETE_USER':
                 await sysUserService.deleteSystemUser(payload.uid);
-                return { success: true, message: 'Admin eliminado.' };
+                return { success: true, message: 'Administrador eliminado.' };
             default:
                 throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
         }
     }
     catch (error) {
+        const err = error;
+        console.error(`[SYS_USER_ERROR] ${action} failed:`, err.message);
         if (error instanceof functions.https.HttpsError)
             throw error;
-        console.error('[SYS_USER_ERROR]', error);
-        throw new functions.https.HttpsError('internal', error.message);
+        throw new functions.https.HttpsError('internal', err.message);
     }
 });
-// =========================================================
-// 9. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
-// =========================================================
-exports.checkSystemHealth = functions.https.onCall(async (data, context) => {
-    if (!context.auth)
-        throw new functions.https.HttpsError('unauthenticated', 'Sin sesión.');
-    const start = Date.now();
-    let dbStatus = 'unknown';
-    let dbLatency = 0;
+exports.manageAbsences = functions.https.onCall(async (data, context) => {
+    const callerAuth = context.auth;
+    if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+    }
+    const { action, payload } = data;
     try {
-        // Prueba de fuego a Firestore
-        await admin.firestore().listCollections();
-        const end = Date.now();
-        dbLatency = end - start;
-        dbStatus = 'connected';
+        const absenceService = await getService(absence_service_1.AbsenceService);
+        switch (action) {
+            case 'CREATE_ABSENCE':
+                return { success: true, data: await absenceService.createAbsence(payload) };
+            default:
+                throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+        }
     }
     catch (error) {
-        console.error('[HEALTH_CHECK] DB Error:', error);
-        dbStatus = 'disconnected';
-        throw new functions.https.HttpsError('unavailable', 'Error conectando a la Base de Datos.');
+        const err = error;
+        console.error(`[ABSENCE_ERROR] Action ${action} failed:`, err.message);
+        if (error instanceof functions.https.HttpsError)
+            throw error;
+        if (err.message.includes('Conflict')) {
+            throw new functions.https.HttpsError('failed-precondition', err.message);
+        }
+        throw new functions.https.HttpsError('internal', err.message);
     }
-    return {
-        serverTime: Date.now(),
-        environment: process.env.FUNCTIONS_EMULATOR ? 'emulator' : 'production',
-        nodeVersion: process.version,
-        database: { status: dbStatus, latencyMs: dbLatency },
-        memory: process.memoryUsage().heapUsed / 1024 / 1024
-    };
+});
+exports.checkSystemHealth = functions.https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
+    }
+    const start = Date.now();
+    try {
+        await admin.firestore().listCollections();
+        const end = Date.now();
+        return {
+            status: 'ok',
+            nodeVersion: process.version,
+            database: {
+                status: 'connected',
+                latencyMs: end - start
+            }
+        };
+    }
+    catch (error) {
+        console.error('[HEALTH_CHECK_ERROR]', error);
+        return {
+            status: 'error',
+            nodeVersion: process.version,
+            database: {
+                status: 'disconnected',
+                latencyMs: -1,
+                error: error.message
+            }
+        };
+    }
 });
 //# sourceMappingURL=index.js.map

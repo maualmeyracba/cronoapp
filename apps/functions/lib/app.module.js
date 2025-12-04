@@ -7,11 +7,10 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AppModule = void 0;
-// apps/functions/src/app.module.ts
 const common_1 = require("@nestjs/common");
 const auth_module_1 = require("./auth/auth.module");
 const scheduling_module_1 = require("./scheduling/scheduling.module");
-const data_management_module_1 = require("./data-management/data-management.module"); // Importar nuevo módulo
+const data_management_module_1 = require("./data-management/data-management.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -20,7 +19,7 @@ exports.AppModule = AppModule = __decorate([
         imports: [
             auth_module_1.AuthModule,
             scheduling_module_1.SchedulingModule,
-            data_management_module_1.DataManagementModule, // Incluir el módulo de gestión de datos
+            data_management_module_1.DataManagementModule,
         ],
         controllers: [],
         providers: [],
