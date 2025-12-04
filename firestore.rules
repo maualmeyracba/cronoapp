@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // --- FUNCIONES AUXILIARES ---
+    
+    // Verifica si el usuario tiene un rol administrativo válido
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.role == 'admin' || 
+        request.auth.token.role == 'SuperAdmin' || 
+        request.auth.token.role == 'Scheduler' || 
+        request.auth.token.role == 'HR_Manager'
+      );
+    }
+    
+    // Verifica si el usuario es el dueño del documento
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // --- REGLAS POR COLECCIÓN ---
+
+    // 1. Turnos (Operativo)
+    match /turnos/{shiftId} {
+      // Admins ven y editan todo
+      allow read: if isAdmin();
+      // Empleados solo ven sus propios turnos
+      allow read: if request.auth != null && resource.data.employeeId == request.auth.uid;
+      // Solo admins escriben (asignación)
+      allow write: if isAdmin();
+    }
+
+    // 2. Empleados (RRHH)
+    match /empleados/{employeeId} {
+      // Admins gestionan todo
+      allow read, write: if isAdmin();
+      // Empleado ve su propio perfil
+      allow read: if isOwner(employeeId);
+    }
+
+    // 3. Ausencias / Novedades
+    match /ausencias/{absenceId} {
+      allow read, write: if isAdmin();
+      // Empleado puede ver sus propias ausencias
+      allow read: if request.auth != null && resource.data.employeeId == request.auth.uid;
+    }
+
+    // 4. Jerarquía Comercial (Clientes, Objetivos, Contratos)
+    match /clientes/{clientId} {
+      allow read, write: if isAdmin();
+    }
+    match /objetivos/{objectiveId} {
+      allow read, write: if isAdmin();
+    }
+    match /contratos_servicio/{contractId} {
+      allow read, write: if isAdmin();
+    }
+    match /tipos_turno/{typeId} {
+      allow read, write: if isAdmin();
+    }
+
+    // 5. Usuarios del Sistema (Back-Office)
+    match /system_users/{userId} {
+      // Solo admins pueden ver/editar usuarios del sistema
+      allow read, write: if isAdmin();
+    }
+  }
+}

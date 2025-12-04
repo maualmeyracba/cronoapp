@@ -1,0 +1,19 @@
+# Directorios de dependencias
+/node_modules
+/apps/functions/node_modules
+/apps/web/node_modules
+
+# Archivos de compilación de TypeScript/JavaScript
+/apps/functions/lib
+/apps/web/dist
+/apps/web/out
+
+# Archivos de caché y logs
+*.log
+.firebase/*.cache
+npm-debug.log*
+yarn-error.log
+
+# Archivos de entorno y credenciales (Nunca subir)
+.env
+.env.*
