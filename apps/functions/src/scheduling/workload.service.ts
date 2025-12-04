@@ -32,10 +32,9 @@ export class WorkloadService {
     await this.checkMonthlyLimit(employee, shiftStart, shiftEnd);
   }
 
-  // 🛑 MÉTODO AGREGADO Y CORREGIDO (Soluciona el error en AbsenceService y el de tipado)
+  // 🛑 MÉTODO checkShiftOverlap (Requerido por AbsenceService)
   async checkShiftOverlap(employeeId: string, start: Date, end: Date): Promise<IShift[]> {
     const db = this.getDb();
-    // Consulta amplia: Turnos que terminan después de que empiece el nuevo rango
     const shiftsQuery = db.collection(SHIFTS_COLLECTION)
         .where('employeeId', '==', employeeId)
         .where('endTime', '>', start);
@@ -44,13 +43,11 @@ export class WorkloadService {
     const conflictingShifts: IShift[] = [];
 
     snapshot.forEach(doc => {
-        const shift = doc.data(); // Datos crudos
-        // Conversión segura de Timestamp a Date
-        const sStart = (shift.startTime as unknown as admin.firestore.Timestamp).toDate();
+        const shift = doc.data(); 
+        const sStart = (shift.startTime as admin.firestore.Timestamp).toDate();
         
-        // Validación precisa en memoria: El turno existente empieza ANTES de que termine el nuevo rango
         if (sStart.getTime() < end.getTime()) {
-             // FIX DE TIPADO: Doble cast para compatibilidad IShift
+             // 🛑 FIX TIPADO: 'as unknown as IShift' resuelve el conflicto con Timestamp
              conflictingShifts.push({ id: doc.id, ...shift } as unknown as IShift);
         }
     });
@@ -90,8 +87,8 @@ export class WorkloadService {
     let accumulatedHours = 0;
     shiftsSnapshot.forEach(doc => {
       const shift = doc.data();
-      const sStart = (shift.startTime as unknown as admin.firestore.Timestamp).toDate();
-      const sEnd = (shift.endTime as unknown as admin.firestore.Timestamp).toDate();
+      const sStart = (shift.startTime as admin.firestore.Timestamp).toDate();
+      const sEnd = (shift.endTime as admin.firestore.Timestamp).toDate();
       const duration = (sEnd.getTime() - sStart.getTime()) / (1000 * 60 * 60);
       accumulatedHours += duration;
     });
