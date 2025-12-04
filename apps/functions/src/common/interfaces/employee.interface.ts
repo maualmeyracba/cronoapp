@@ -1,50 +1,46 @@
-/**
- * @typedef {string} EmployeeRole
- * @description Define los roles de seguridad del sistema.
- */
-export type EmployeeRole = 'admin' | 'employee';
+// 👇 CORRECCIÓN: Usar 'firebase-admin/firestore' en el backend
+import { Timestamp } from 'firebase-admin/firestore'; 
 
-/**
- * @typedef {string} ContractType
- * @description Define la modalidad de contratación para reglas de negocio.
- */
+export type EmployeeRole = 'admin' | 'employee';
 export type ContractType = 'FullTime' | 'PartTime' | 'Eventual';
 
-/**
- * @interface IEmployee
- * @description Estructura del documento de perfil de empleado en Firestore.
- */
 export interface IEmployee {
-  /**
-   * ID único del usuario de Firebase Authentication (UID).
-   */
   uid: string;
-  /**
-   * Nombre completo del empleado.
-   */
   name: string;
-  /**
-   * Rol asignado (para Custom Claims y reglas de seguridad).
-   */
   role: EmployeeRole;
-  /**
-   * Correo electrónico para acceso.
-   */
   email: string;
-  /**
-   * Indica si el empleado está activo en la empresa.
-   */
   isAvailable: boolean;
-
-  // 🛑 NUEVOS CAMPOS DE CONTROL DE NEGOCIO (WFM)
-  /**
-   * Límite de horas mensuales permitidas (Ej: 176 hs estándar).
-   * Si se supera, el sistema bloqueará la asignación de nuevos turnos.
-   */
   maxHoursPerMonth: number;
-  
-  /**
-   * Tipo de contrato.
-   */
   contractType: ContractType;
+    
+    // 👇 AGREGAMOS ESTOS CAMPOS PARA QUE DESAPAREZCAN LOS ERRORES ROJOS
+    clientId: string;   
+    dni: string;        
+    fileNumber: string; 
+    address: string;    
+    phone?: string;     
+}
+
+// Interfaces auxiliares (Déjalas si ya las tienes, o agrégalas si faltan)
+export interface IAbsence {
+    id: string;
+    employeeId: string;
+    employeeName: string;
+    clientId: string;
+    type: 'VACATION' | 'SICK_LEAVE' | 'OTHER';
+    startDate: Timestamp; 
+    endDate: Timestamp;
+    reason: string;
+    status: 'PENDING' | 'APPROVED' | 'REJECTED';
+    createdAt: Timestamp;
+}
+
+export interface IAbsencePayload {
+    employeeId: string;
+    employeeName: string;
+    clientId: string;
+    type: 'VACATION' | 'SICK_LEAVE' | 'OTHER';
+    startDate: Date; 
+    endDate: Date;
+    reason: string;
 }

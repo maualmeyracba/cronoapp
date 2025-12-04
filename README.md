@@ -1,16 +1,41 @@
-# React + Vite
+# ControlData (Cronoapp)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**ControlData** es una plataforma SaaS de gestión de fuerza laboral (WFM), diseñada para empresas de seguridad y servicios. Permite la gestión integral de empleados, control de asistencia por geolocalización, planificación de turnos y administración multi-empresa (Multi-tenancy).
 
-Currently, two official plugins are available:
+## 🏗️ Arquitectura y Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+El proyecto es un **Monorepo** que integra Frontend y Backend:
 
-## React Compiler
+* **Frontend (`apps/web`):**
+    * **Framework:** Next.js 16 (Static Export).
+    * **Estilos:** Tailwind CSS.
+    * **Estado/Lógica:** React Context (ClientContext) + Hooks personalizados.
+* **Backend (`apps/functions`):**
+    * **Runtime:** Firebase Cloud Functions (Node.js 20).
+    * **Framework:** NestJS (Inyección de dependencias y arquitectura modular).
+    * **Base de Datos:** Firestore (NoSQL).
+    * **Auth:** Firebase Authentication (Custom Claims para roles).
 
-The React Compiler is currently not compatible with SWC. See [this issue](https://github.com/vitejs/vite-plugin-react/issues/428) for tracking the progress.
+## 🚀 Requisitos Previos
 
-## Expanding the ESLint configuration
+* Node.js v20+
+* NPM
+* Firebase CLI (`npm install -g firebase-tools`)
+* Java (Opcional, solo si se desea usar el Emulador de Firebase localmente)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## 🛠️ Instalación y Configuración
+
+1.  **Clonar/Descargar el repositorio.**
+2.  **Instalar dependencias raíz y workspaces:**
+    ```bash
+    npm install
+    ```
+
+## 💻 Desarrollo Local
+
+### Backend (Functions)
+Para compilar y observar cambios en el backend TypeScript:
+```bash
+npm run build --prefix apps/functions -- --watch
+# O para levantar emuladores (si están configurados)
+npm run serve --prefix apps/functions

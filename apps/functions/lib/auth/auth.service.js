@@ -15,7 +15,7 @@ let AuthService = class AuthService {
         this.getAuth = () => admin.app().auth();
         this.getDb = () => admin.app().firestore();
     }
-    async createEmployeeProfile(email, password, role, name) {
+    async createEmployeeProfile(email, password, role, name, profileData) {
         const authInstance = this.getAuth();
         const user = await authInstance.createUser({
             email,
@@ -24,10 +24,10 @@ let AuthService = class AuthService {
             emailVerified: true,
         }).catch(error => {
             if (error.code === 'auth/email-already-exists') {
-                throw new common_1.ConflictException('The email address is already in use.');
+                throw new common_1.ConflictException('La dirección de correo ya está en uso.');
             }
             console.error('[AUTH_CREATE_ERROR]', error.message);
-            throw new common_1.InternalServerErrorException('Failed to create user in Firebase Auth.');
+            throw new common_1.InternalServerErrorException('Error al crear usuario en Firebase Auth.');
         });
         const employeeUid = user.uid;
         try {
@@ -36,7 +36,7 @@ let AuthService = class AuthService {
         catch (error) {
             console.error(`[CLAIMS_ERROR] Failed to set claims.`, error);
             await authInstance.deleteUser(employeeUid);
-            throw new common_1.InternalServerErrorException('Failed to assign role. Account creation aborted.');
+            throw new common_1.InternalServerErrorException('Error al asignar rol. Creación abortada.');
         }
         const employeeProfile = {
             uid: employeeUid,
@@ -45,7 +45,11 @@ let AuthService = class AuthService {
             role: role,
             isAvailable: true,
             maxHoursPerMonth: 176,
-            contractType: 'FullTime'
+            contractType: 'FullTime',
+            clientId: profileData.clientId,
+            dni: profileData.dni,
+            fileNumber: profileData.fileNumber,
+            address: profileData.address
         };
         const dbInstance = this.getDb();
         try {
@@ -54,7 +58,7 @@ let AuthService = class AuthService {
         catch (error) {
             console.error(`[FIRESTORE_ERROR] Failed to create profile.`, error);
             await authInstance.deleteUser(employeeUid);
-            throw new common_1.InternalServerErrorException('Failed to save profile. Account creation aborted.');
+            throw new common_1.InternalServerErrorException('Error al guardar perfil. Creación abortada.');
         }
         return employeeProfile;
     }

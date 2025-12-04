@@ -29,12 +29,15 @@ exports.createUser = functions.https.onCall(async (data, context) => {
     }
     try {
         const authService = await getService(auth_service_1.AuthService);
-        const { email, password, name, role: receivedRole } = data;
+        const { email, password, name, role: receivedRole, clientId, dni, fileNumber, address } = data;
         if (!ALLOWED_ROLES.includes(receivedRole)) {
             throw new functions.https.HttpsError('invalid-argument', 'Rol inválido.');
         }
+        if (!clientId) {
+            throw new functions.https.HttpsError('invalid-argument', 'El ID de la empresa (clientId) es obligatorio.');
+        }
         const validRole = receivedRole;
-        const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name);
+        const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name, { clientId, dni, fileNumber, address });
         return { success: true, uid: newEmployee.uid };
     }
     catch (error) {

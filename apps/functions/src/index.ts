@@ -11,7 +11,6 @@ import { AuditService } from './scheduling/audit.service';
 import { ClientService } from './data-management/client.service';
 import { EmployeeService } from './data-management/employee.service';
 import { SystemUserService } from './data-management/system-user.service';
-// 👇 IMPORTANTE: Servicio de Ausencias
 import { AbsenceService } from './data-management/absence.service';
 
 // Interfaces
@@ -34,7 +33,7 @@ const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager'];
 const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee']; 
 
 // =========================================================
-// 1. GESTIÓN DE USUARIOS (AUTH)
+// 1. GESTIÓN DE USUARIOS (AUTH) --> 🛑 ACTUALIZADO
 // =========================================================
 export const createUser = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -44,13 +43,29 @@ export const createUser = functions.https.onCall(async (data, context) => {
 
   try {
     const authService = await getService(AuthService);
-    const { email, password, name, role: receivedRole } = data;
+    // 👇 CAMBIO CRÍTICO: Recibimos los nuevos campos del frontend
+    const { email, password, name, role: receivedRole, clientId, dni, fileNumber, address } = data;
     
     if (!ALLOWED_ROLES.includes(receivedRole as EmployeeRole)) {
        throw new functions.https.HttpsError('invalid-argument', 'Rol inválido.');
     }
+    
+    // Validación básica: El clientId es obligatorio para multi-tenancy
+    if (!clientId) {
+        throw new functions.https.HttpsError('invalid-argument', 'El ID de la empresa (clientId) es obligatorio.');
+    }
+
     const validRole = receivedRole as EmployeeRole;
-    const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name);
+    
+    // 👇 CAMBIO CRÍTICO: Pasamos el objeto extra con dni, address, etc.
+    const newEmployee = await authService.createEmployeeProfile(
+        email, 
+        password, 
+        validRole, 
+        name,
+        { clientId, dni, fileNumber, address }
+    );
+    
     return { success: true, uid: newEmployee.uid };
   } catch (error: any) {
     const err = error as Error;
@@ -173,7 +188,6 @@ export const manageEmployees = functions.https.onCall(async (data, context) => {
     const employeeService = await getService(EmployeeService);
     switch (action) {
       case 'GET_ALL_EMPLOYEES':
-        // 👇 IMPORTANTE: Pasar el clientId recibido en el payload para filtrar
         const employees = await employeeService.findAllEmployees(payload?.clientId);
         return { success: true, data: employees };
       case 'UPDATE_EMPLOYEE':
@@ -235,7 +249,6 @@ export const manageSystemUsers = functions.https.onCall(async (data, context) =>
 // =========================================================
 export const manageAbsences = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
-  // Validación de Rol
   if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
     throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
   }

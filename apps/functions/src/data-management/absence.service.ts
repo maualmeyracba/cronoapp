@@ -1,24 +1,22 @@
 import { Injectable, ConflictException } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-// 👇 Importamos el servicio de carga de trabajo para validar reglas de negocio
 import { WorkloadService } from '../scheduling/workload.service';
-// 👇 Asegúrate de que estas interfaces existan en tu carpeta common
 import { IAbsence, IAbsencePayload } from '../common/interfaces/absence.interface';
 
 @Injectable()
 export class AbsenceService {
     // Inicialización diferida
     private getDb = () => admin.app().firestore();
-    private readonly absencesCollection = 'ausencias'; // Nombre de la colección en español según tus reglas
+    private readonly absencesCollection = 'ausencias'; 
     
     constructor(private readonly workloadService: WorkloadService) {}
 
     async createAbsence(payload: IAbsencePayload): Promise<IAbsence> {
-        // 1. Convertimos fechas (sea Date o Timestamp) a objetos Date nativos para la lógica de negocio
+        // 1. Convertimos fechas
         const startDateObj = (payload.startDate as any).toDate ? (payload.startDate as any).toDate() : new Date(payload.startDate as any);
         const endDateObj = (payload.endDate as any).toDate ? (payload.endDate as any).toDate() : new Date(payload.endDate as any);
 
-        // 2. Validar solapamiento usando WorkloadService (Regla de Negocio)
+        // 2. Validar solapamiento
         const conflictingShifts = await this.workloadService.checkShiftOverlap(
             payload.employeeId,
             startDateObj, 
@@ -30,12 +28,11 @@ export class AbsenceService {
             throw new ConflictException(`Conflicto: El empleado tiene ${conflictingShifts.length} turnos asignados durante este período.`);
         }
 
-        // 3. Crear el objeto a persistir en Firestore
-        // Convertimos a Timestamp de Firestore para guardar
+        // 3. Crear el objeto a persistir
         const startTimestamp = admin.firestore.Timestamp.fromDate(startDateObj);
         const endTimestamp = admin.firestore.Timestamp.fromDate(endDateObj);
 
-        const newAbsence: any = { // Usamos any temporalmente para evitar conflictos estrictos de IAbsence id
+        const newAbsence: any = { 
             employeeId: payload.employeeId,
             employeeName: payload.employeeName,
             clientId: payload.clientId,
@@ -43,7 +40,7 @@ export class AbsenceService {
             startDate: startTimestamp,
             endDate: endTimestamp,     
             reason: payload.reason,
-            status: 'APPROVED', // Auto-aprobado por ser creado por Admin
+            status: 'APPROVED', 
             createdAt: admin.firestore.Timestamp.now(), 
         };
 
