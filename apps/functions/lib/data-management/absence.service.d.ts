@@ -4,6 +4,7 @@ export declare class AbsenceService {
     private readonly workloadService;
     private getDb;
     private readonly absencesCollection;
+    private readonly shiftsCollection;
     constructor(workloadService: WorkloadService);
     createAbsence(payload: IAbsencePayload): Promise<IAbsence>;
 }

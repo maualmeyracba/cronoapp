@@ -20,7 +20,7 @@ exports.DataManagementModule = DataManagementModule;
 exports.DataManagementModule = DataManagementModule = __decorate([
     (0, common_1.Module)({
         imports: [
-            scheduling_module_1.SchedulingModule
+            (0, common_1.forwardRef)(() => scheduling_module_1.SchedulingModule)
         ],
         providers: [
             data_management_service_1.DataManagementService,

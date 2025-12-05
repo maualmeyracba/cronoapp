@@ -12,7 +12,9 @@ const client_service_1 = require("./data-management/client.service");
 const employee_service_1 = require("./data-management/employee.service");
 const system_user_service_1 = require("./data-management/system-user.service");
 const absence_service_1 = require("./data-management/absence.service");
-admin.initializeApp();
+if (!admin.apps.length) {
+    admin.initializeApp();
+}
 let nestApp;
 async function getService(service) {
     if (!nestApp) {
@@ -202,10 +204,15 @@ exports.manageSystemUsers = functions.https.onCall(async (data, context) => {
 });
 exports.manageAbsences = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
-    if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
-        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+    if (!callerAuth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
     }
     const { action, payload } = data;
+    const isAdmin = ADMIN_ROLES.includes(callerAuth.token.role);
+    const isSelf = payload.employeeId === callerAuth.uid;
+    if (!isAdmin && !(isSelf && action === 'CREATE_ABSENCE')) {
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. No puede reportar ausencias para otros.');
+    }
     try {
         const absenceService = await getService(absence_service_1.AbsenceService);
         switch (action) {

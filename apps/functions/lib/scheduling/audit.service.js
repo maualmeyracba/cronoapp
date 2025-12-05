@@ -28,34 +28,55 @@ let AuditService = class AuditService {
         return dbInstance.runTransaction(async (transaction) => {
             const shiftDoc = await transaction.get(shiftRef);
             if (!shiftDoc.exists) {
-                throw new common_1.BadRequestException('Shift not found.');
+                throw new common_1.BadRequestException('El turno no existe.');
             }
             const shift = shiftDoc.data();
             if (shift.employeeId !== employeeUid) {
-                throw new common_1.ForbiddenException('No estás autorizado para modificar este turno.');
+                throw new common_1.ForbiddenException('No estás autorizado para gestionar este turno.');
+            }
+            const now = admin.firestore.Timestamp.now();
+            if (action === 'CHECK_IN') {
+                const shiftStartMillis = shift.startTime.toMillis();
+                const nowMillis = now.toMillis();
+                const diffMillis = shiftStartMillis - nowMillis;
+                const diffMinutes = diffMillis / (1000 * 60);
+                const TOLERANCE_MINUTES = 10;
+                if (diffMinutes > TOLERANCE_MINUTES) {
+                    throw new functions.https.HttpsError('failed-precondition', `⏳ Es muy temprano. El fichaje se habilita ${TOLERANCE_MINUTES} minutos antes del inicio del turno.`);
+                }
             }
             const objective = await this.dmService.getObjectiveById(shift.objectiveId);
             const objectiveCoords = objective.location;
             if (!this.geofencingService.isInGeofence(employeeCoords, objectiveCoords)) {
-                console.warn(`Geofence failed for ${employeeUid} at shift ${shiftId}.`);
-                throw new functions.https.HttpsError('failed-precondition', 'Debe estar cerca del objetivo para registrar la acción.');
+                console.warn(`[GEOFENCE_FAIL] Employee ${employeeUid} outside range for Shift ${shiftId}.`);
+                throw new functions.https.HttpsError('failed-precondition', '📍 Estás demasiado lejos del objetivo. Acércate a la sede para fichar.');
             }
-            const now = admin.firestore.Timestamp.now();
             let newStatus;
-            if (action === 'CHECK_IN' && shift.status === 'Assigned') {
+            if (action === 'CHECK_IN') {
+                if (shift.status !== 'Assigned') {
+                    throw new common_1.BadRequestException(`No se puede dar presente. El estado actual es: ${shift.status}`);
+                }
                 newStatus = 'InProgress';
                 shift.checkInTime = now;
             }
-            else if (action === 'CHECK_OUT' && shift.status === 'InProgress') {
+            else if (action === 'CHECK_OUT') {
+                if (shift.status !== 'InProgress') {
+                    throw new common_1.BadRequestException(`No se puede finalizar. El turno no está en curso (Estado: ${shift.status})`);
+                }
                 newStatus = 'Completed';
                 shift.checkOutTime = now;
             }
             else {
-                throw new common_1.BadRequestException(`Acción ${action} inválida para el estado actual: ${shift.status}.`);
+                throw new common_1.BadRequestException(`Acción desconocida: ${action}`);
             }
             shift.status = newStatus;
             shift.updatedAt = now;
-            transaction.update(shiftRef, shift);
+            transaction.update(shiftRef, {
+                status: newStatus,
+                checkInTime: shift.checkInTime,
+                checkOutTime: shift.checkOutTime,
+                updatedAt: now
+            });
             return shift;
         });
     }

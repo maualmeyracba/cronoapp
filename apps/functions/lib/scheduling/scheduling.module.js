@@ -11,20 +11,28 @@ const common_1 = require("@nestjs/common");
 const scheduling_service_1 = require("./scheduling.service");
 const shift_overlap_service_1 = require("./shift-overlap.service");
 const workload_service_1 = require("./workload.service");
+const audit_service_1 = require("./audit.service");
+const geofencing_service_1 = require("./geofencing.service");
+const data_management_module_1 = require("../data-management/data-management.module");
 let SchedulingModule = class SchedulingModule {
 };
 exports.SchedulingModule = SchedulingModule;
 exports.SchedulingModule = SchedulingModule = __decorate([
     (0, common_1.Module)({
-        imports: [],
+        imports: [
+            (0, common_1.forwardRef)(() => data_management_module_1.DataManagementModule)
+        ],
         providers: [
             scheduling_service_1.SchedulingService,
             shift_overlap_service_1.ShiftOverlapService,
-            workload_service_1.WorkloadService
+            workload_service_1.WorkloadService,
+            audit_service_1.AuditService,
+            geofencing_service_1.GeofencingService
         ],
         exports: [
             scheduling_service_1.SchedulingService,
-            workload_service_1.WorkloadService
+            workload_service_1.WorkloadService,
+            audit_service_1.AuditService
         ],
     })
 ], SchedulingModule);

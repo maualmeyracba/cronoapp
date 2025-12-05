@@ -1,30 +1,30 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { DataManagementService } from './data-management.service';
 import { ClientService } from './client.service';
 import { EmployeeService } from './employee.service';
 import { SystemUserService } from './system-user.service';
-// 👇 CORRECCIÓN: Importamos el servicio de ausencias
 import { AbsenceService } from './absence.service';
-// 👇 CORRECCIÓN: Importamos SchedulingModule para acceder a WorkloadService
+// Importamos el módulo de agendamiento
 import { SchedulingModule } from '../scheduling/scheduling.module';
 
 @Module({
   imports: [
-    SchedulingModule 
+    // 🛑 FIX: Usamos forwardRef para romper el ciclo con Scheduling
+    forwardRef(() => SchedulingModule)
   ],
   providers: [
     DataManagementService,
     ClientService,
     EmployeeService,
     SystemUserService,
-    AbsenceService // 👈 Registrado
+    AbsenceService
   ],
   exports: [
     DataManagementService,
     ClientService,
     EmployeeService,
     SystemUserService,
-    AbsenceService // 👈 Exportado
+    AbsenceService
   ],
 })
 export class DataManagementModule {}

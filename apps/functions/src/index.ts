@@ -16,9 +16,12 @@ import { AbsenceService } from './data-management/absence.service';
 // Interfaces
 import { EmployeeRole } from './common/interfaces/employee.interface';
 
-// Inicialización
-admin.initializeApp();
+// Inicialización de Firebase Admin
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 
+// Singleton para la App de NestJS (Contexto de Inyección de Dependencias)
 let nestApp: INestApplicationContext;
 
 async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
@@ -28,12 +31,12 @@ async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
   return nestApp.get<T>(service); 
 }
 
-// Roles Administrativos
+// Constantes de Roles
 const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager'];
-const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee']; 
+const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee'];
 
 // =========================================================
-// 1. GESTIÓN DE USUARIOS (AUTH) --> 🛑 ACTUALIZADO
+// 1. GESTIÓN DE USUARIOS (AUTH)
 // =========================================================
 export const createUser = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -43,7 +46,6 @@ export const createUser = functions.https.onCall(async (data, context) => {
 
   try {
     const authService = await getService(AuthService);
-    // 👇 CAMBIO CRÍTICO: Recibimos los nuevos campos del frontend
     const { email, password, name, role: receivedRole, clientId, dni, fileNumber, address } = data;
     
     if (!ALLOWED_ROLES.includes(receivedRole as EmployeeRole)) {
@@ -56,8 +58,7 @@ export const createUser = functions.https.onCall(async (data, context) => {
     }
 
     const validRole = receivedRole as EmployeeRole;
-    
-    // 👇 CAMBIO CRÍTICO: Pasamos el objeto extra con dni, address, etc.
+
     const newEmployee = await authService.createEmployeeProfile(
         email, 
         password, 
@@ -65,7 +66,6 @@ export const createUser = functions.https.onCall(async (data, context) => {
         name,
         { clientId, dni, fileNumber, address }
     );
-    
     return { success: true, uid: newEmployee.uid };
   } catch (error: any) {
     const err = error as Error;
@@ -158,7 +158,8 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
       case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
       case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
       case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
-      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
+      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data);
+          return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
       case 'CREATE_CONTRACT': return { success: true, data: await clientService.createServiceContract(payload) };
@@ -249,11 +250,20 @@ export const manageSystemUsers = functions.https.onCall(async (data, context) =>
 // =========================================================
 export const manageAbsences = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
-  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
-    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  if (!callerAuth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
   }
 
   const { action, payload } = data as { action: string, payload: any };
+
+  // 🛑 FIX DE SEGURIDAD PARA SELF-REPORTING:
+  // Se permite si es Admin, O SI el empleado está reportando su propia ausencia.
+  const isAdmin = ADMIN_ROLES.includes(callerAuth.token.role as string);
+  const isSelf = payload.employeeId === callerAuth.uid;
+
+  if (!isAdmin && !(isSelf && action === 'CREATE_ABSENCE')) {
+      throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. No puede reportar ausencias para otros.');
+  }
 
   try {
     const absenceService = await getService(AbsenceService);

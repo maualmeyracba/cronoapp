@@ -18,14 +18,34 @@ let AbsenceService = class AbsenceService {
         this.workloadService = workloadService;
         this.getDb = () => admin.app().firestore();
         this.absencesCollection = 'ausencias';
+        this.shiftsCollection = 'turnos';
     }
     async createAbsence(payload) {
-        const startDateObj = payload.startDate.toDate ? payload.startDate.toDate() : new Date(payload.startDate);
-        const endDateObj = payload.endDate.toDate ? payload.endDate.toDate() : new Date(payload.endDate);
+        const parseDate = (input) => {
+            if (typeof input === 'string')
+                return new Date(input);
+            if (input && input.seconds)
+                return new Date(input.seconds * 1000);
+            return new Date(input);
+        };
+        const startDateObj = parseDate(payload.startDate);
+        const endDateObj = parseDate(payload.endDate);
+        if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
+            throw new Error('Fechas inválidas recibidas en el backend.');
+        }
         const conflictingShifts = await this.workloadService.checkShiftOverlap(payload.employeeId, startDateObj, endDateObj);
+        const db = this.getDb();
+        const batch = db.batch();
         if (conflictingShifts.length > 0) {
-            console.warn(`[AbsenceService] Conflict found for employee ${payload.employeeId}`);
-            throw new common_1.ConflictException(`Conflicto: El empleado tiene ${conflictingShifts.length} turnos asignados durante este período.`);
+            console.log(`[AbsenceService] Se encontraron ${conflictingShifts.length} turnos afectados. Procesando bajas...`);
+            conflictingShifts.forEach(shift => {
+                const shiftRef = db.collection(this.shiftsCollection).doc(shift.id);
+                batch.update(shiftRef, {
+                    status: 'Canceled',
+                    description: `Cancelación automática por Ausencia: ${payload.reason}`,
+                    updatedAt: admin.firestore.Timestamp.now()
+                });
+            });
         }
         const startTimestamp = admin.firestore.Timestamp.fromDate(startDateObj);
         const endTimestamp = admin.firestore.Timestamp.fromDate(endDateObj);
@@ -39,9 +59,12 @@ let AbsenceService = class AbsenceService {
             reason: payload.reason,
             status: 'APPROVED',
             createdAt: admin.firestore.Timestamp.now(),
+            impactedShiftsCount: conflictingShifts.length
         };
-        const docRef = await this.getDb().collection(this.absencesCollection).add(newAbsence);
-        return { id: docRef.id, ...newAbsence };
+        const newAbsenceRef = db.collection(this.absencesCollection).doc();
+        batch.set(newAbsenceRef, newAbsence);
+        await batch.commit();
+        return { id: newAbsenceRef.id, ...newAbsence };
     }
 };
 exports.AbsenceService = AbsenceService;

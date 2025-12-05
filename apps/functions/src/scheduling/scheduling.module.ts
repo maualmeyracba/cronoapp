@@ -1,23 +1,28 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { SchedulingService } from './scheduling.service';
 import { ShiftOverlapService } from './shift-overlap.service';
 import { WorkloadService } from './workload.service';
+import { AuditService } from './audit.service';
+import { GeofencingService } from './geofencing.service';
+// Importamos el módulo de datos
+import { DataManagementModule } from '../data-management/data-management.module';
 
-/**
- * @module SchedulingModule
- * @description Módulo de NestJS para toda la lógica de agendamiento de turnos.
- * Agrupa los servicios de asignación, validación de solapamiento y carga de trabajo.
- */
 @Module({
-  imports: [],
+  imports: [
+    // 🛑 FIX: Usamos forwardRef para romper el ciclo con DataManagement
+    forwardRef(() => DataManagementModule)
+  ],
   providers: [
-    SchedulingService,      // Servicio Principal
-    ShiftOverlapService,    // Validador de Solapamiento (P2)
-    WorkloadService         // Validador de Carga/Ausencias (Reglas de Negocio)
+    SchedulingService,
+    ShiftOverlapService,
+    WorkloadService,
+    AuditService,      // Servicio de Auditoría (Fichaje)
+    GeofencingService  // Dependencia de Auditoría
   ],
   exports: [
-    SchedulingService,      // Exportamos el servicio principal
-    WorkloadService         // 👈 CORRECCIÓN: Exportamos WorkloadService para que AbsenceService lo pueda usar
+    SchedulingService,
+    WorkloadService,
+    AuditService       // Exportamos para que la API lo vea
   ],
 })
 export class SchedulingModule {}
