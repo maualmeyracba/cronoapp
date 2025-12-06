@@ -22,7 +22,7 @@ async function getService(service) {
     }
     return nestApp.get(service);
 }
-const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager'];
+const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager'];
 const ALLOWED_ROLES = ['admin', 'employee'];
 exports.createUser = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
@@ -35,11 +35,8 @@ exports.createUser = functions.https.onCall(async (data, context) => {
         if (!ALLOWED_ROLES.includes(receivedRole)) {
             throw new functions.https.HttpsError('invalid-argument', 'Rol inválido.');
         }
-        if (!clientId) {
-            throw new functions.https.HttpsError('invalid-argument', 'El ID de la empresa (clientId) es obligatorio.');
-        }
         const validRole = receivedRole;
-        const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name, { clientId, dni, fileNumber, address });
+        const newEmployee = await authService.createEmployeeProfile(email, password, validRole, name, { clientId: clientId || '', dni, fileNumber, address });
         return { success: true, uid: newEmployee.uid };
     }
     catch (error) {
@@ -126,9 +123,24 @@ exports.manageHierarchy = functions.https.onCall(async (data, context) => {
                 await clientService.deleteClient(payload.id);
                 return { success: true, message: 'Cliente eliminado' };
             case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
+            case 'UPDATE_OBJECTIVE':
+                await clientService.updateObjective(payload.id, payload.data);
+                return { success: true, message: 'Objetivo actualizado correctamente' };
             case 'CREATE_CONTRACT': return { success: true, data: await clientService.createServiceContract(payload) };
+            case 'UPDATE_CONTRACT':
+                await clientService.updateServiceContract(payload.id, payload.data);
+                return { success: true, message: 'Servicio actualizado' };
+            case 'DELETE_CONTRACT':
+                await clientService.deleteServiceContract(payload.id);
+                return { success: true, message: 'Servicio eliminado' };
             case 'CREATE_SHIFT_TYPE': return { success: true, data: await clientService.createShiftType(payload) };
             case 'GET_SHIFT_TYPES': return { success: true, data: await clientService.getShiftTypesByContract(payload.contractId) };
+            case 'UPDATE_SHIFT_TYPE':
+                await clientService.updateShiftType(payload.id, payload.data);
+                return { success: true, message: 'Modalidad actualizada' };
+            case 'DELETE_SHIFT_TYPE':
+                await clientService.deleteShiftType(payload.id);
+                return { success: true, message: 'Modalidad eliminada' };
             default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
         }
     }
@@ -211,7 +223,7 @@ exports.manageAbsences = functions.https.onCall(async (data, context) => {
     const isAdmin = ADMIN_ROLES.includes(callerAuth.token.role);
     const isSelf = payload.employeeId === callerAuth.uid;
     if (!isAdmin && !(isSelf && action === 'CREATE_ABSENCE')) {
-        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. No puede reportar ausencias para otros.');
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
     }
     try {
         const absenceService = await getService(absence_service_1.AbsenceService);

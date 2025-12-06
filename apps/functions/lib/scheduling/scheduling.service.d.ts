@@ -9,4 +9,6 @@ export declare class SchedulingService {
     constructor(overlapService: ShiftOverlapService, workloadService: WorkloadService);
     private convertToDate;
     assignShift(shiftData: Partial<IShift>, userAuth: admin.auth.DecodedIdToken): Promise<IShift>;
+    updateShift(shiftId: string, updateData: Partial<IShift>): Promise<void>;
+    deleteShift(shiftId: string): Promise<void>;
 }

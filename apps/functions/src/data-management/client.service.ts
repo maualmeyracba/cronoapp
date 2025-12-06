@@ -1,12 +1,11 @@
 import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import * as admin from 'firebase-admin';
-// Rutas relativas correctas para evitar errores de compilación TS2307
 import { 
   IClient, 
   IObjective, 
   IServiceContract, 
   IShiftType 
-} from '../common/interfaces/client.interface'; 
+} from '../common/interfaces/client.interface';
 
 const COLL_CLIENTS = 'clientes';
 const COLL_OBJECTIVES = 'objetivos';
@@ -16,11 +15,10 @@ const COLL_SHIFT_TYPES = 'tipos_turno';
 @Injectable()
 export class ClientService {
 
-  // 🔑 Inicialización diferida (Lazy Loading) para evitar error 'app/no-app'
   private getDb = () => admin.app().firestore();
 
   // ==========================================
-  // 1. GESTIÓN DE CLIENTES (EMPRESAS)
+  // 1. GESTIÓN DE CLIENTES
   // ==========================================
 
   async createClient(data: Omit<IClient, 'id' | 'createdAt'>): Promise<IClient> {
@@ -32,7 +30,6 @@ export class ClientService {
       id: ref.id,
       createdAt: admin.firestore.Timestamp.now(),
     };
-
     await ref.set(newClient);
     return newClient;
   }
@@ -45,37 +42,27 @@ export class ClientService {
 
   async findAllClients(): Promise<IClient[]> {
     try {
-      // Nota: Si quieres ver incluso los eliminados/inactivos, quita el .where
-      const snapshot = await this.getDb().collection(COLL_CLIENTS)
-        // .where('status', '==', 'Active') // Descomentar para filtrar solo activos
-        .get();
-
+      const snapshot = await this.getDb().collection(COLL_CLIENTS).get();
       if (snapshot.empty) return [];
 
       return snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
       } as IClient));
-
     } catch (error) {
       console.error('[ERROR_FIND_CLIENTS]', error);
       throw new InternalServerErrorException('Error al consultar clientes.');
     }
   }
 
-  // 🛑 NUEVO: Actualizar Cliente
   async updateClient(id: string, data: Partial<IClient>): Promise<void> {
     const ref = this.getDb().collection(COLL_CLIENTS).doc(id);
-    
-    // Protección: No permitir modificar ID ni fecha de creación
     const updateData = { ...data };
     delete (updateData as any).id;
     delete (updateData as any).createdAt;
-
     await ref.update(updateData);
   }
 
-  // 🛑 NUEVO: Eliminar Cliente
   async deleteClient(id: string): Promise<void> {
     await this.getDb().collection(COLL_CLIENTS).doc(id).delete();
   }
@@ -85,16 +72,13 @@ export class ClientService {
   // ==========================================
 
   async createObjective(data: Omit<IObjective, 'id'>): Promise<IObjective> {
-    await this.getClient(data.clientId); // Validar existencia
-
+    await this.getClient(data.clientId); 
     const db = this.getDb();
     const ref = db.collection(COLL_OBJECTIVES).doc();
-
     const newObjective: IObjective = {
       ...data,
       id: ref.id,
     };
-
     await ref.set(newObjective);
     return newObjective;
   }
@@ -104,6 +88,21 @@ export class ClientService {
       .where('clientId', '==', clientId)
       .get();
     return snapshot.docs.map(d => ({ id: d.id, ...d.data() }) as IObjective);
+  }
+
+  // Método de actualización para Objetivos
+  async updateObjective(id: string, data: Partial<IObjective>): Promise<void> {
+    const db = this.getDb();
+    const updateData = { ...data };
+    delete (updateData as any).id; 
+    
+    // Asegurar tipos numéricos en location
+    if (updateData.location) {
+        updateData.location.latitude = Number(updateData.location.latitude);
+        updateData.location.longitude = Number(updateData.location.longitude);
+    }
+
+    await db.collection(COLL_OBJECTIVES).doc(id).update(updateData);
   }
 
   public async getClientById(clientId: string): Promise<IClient> {
@@ -119,7 +118,7 @@ export class ClientService {
   }
 
   // ==========================================
-  // 3. GESTIÓN DE CONTRATOS
+  // 3. GESTIÓN DE CONTRATOS (SERVICIOS)
   // ==========================================
 
   async createServiceContract(data: Omit<IServiceContract, 'id'>): Promise<IServiceContract> {
@@ -128,7 +127,6 @@ export class ClientService {
     
     let startDate: admin.firestore.Timestamp;
     
-    // Manejo robusto de fechas entrantes (JSON o Date)
     if (data.startDate instanceof admin.firestore.Timestamp) {
         startDate = data.startDate;
     } else if ((data.startDate as any)._seconds) {
@@ -142,13 +140,24 @@ export class ClientService {
       id: ref.id,
       startDate: startDate,
     };
-
     await ref.set(newContract);
     return newContract;
   }
 
+  async updateServiceContract(id: string, data: Partial<IServiceContract>): Promise<void> {
+    const db = this.getDb();
+    const updateData = { ...data };
+    delete (updateData as any).id; 
+    await db.collection(COLL_CONTRACTS).doc(id).update(updateData);
+  }
+
+  async deleteServiceContract(id: string): Promise<void> {
+    const db = this.getDb();
+    await db.collection(COLL_CONTRACTS).doc(id).delete();
+  }
+
   // ==========================================
-  // 4. GESTIÓN DE MODALIDADES
+  // 4. GESTIÓN DE MODALIDADES (TIPOS DE TURNO)
   // ==========================================
 
   async createShiftType(data: Omit<IShiftType, 'id'>): Promise<IShiftType> {
@@ -159,7 +168,6 @@ export class ClientService {
       ...data,
       id: ref.id,
     };
-
     await ref.set(newType);
     return newType;
   }
@@ -169,5 +177,17 @@ export class ClientService {
       .where('contractId', '==', contractId)
       .get();
     return snapshot.docs.map(d => ({ id: d.id, ...d.data() }) as IShiftType);
+  }
+
+  async updateShiftType(id: string, data: Partial<IShiftType>): Promise<void> {
+    const db = this.getDb();
+    const updateData = { ...data };
+    delete (updateData as any).id; 
+    await db.collection(COLL_SHIFT_TYPES).doc(id).update(updateData);
+  }
+
+  async deleteShiftType(id: string): Promise<void> {
+    const db = this.getDb();
+    await db.collection(COLL_SHIFT_TYPES).doc(id).delete();
   }
 }

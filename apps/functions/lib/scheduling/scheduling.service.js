@@ -25,15 +25,12 @@ let SchedulingService = class SchedulingService {
     convertToDate(input) {
         if (!input)
             throw new Error('Fecha inválida o inexistente.');
-        if (typeof input.toDate === 'function') {
+        if (typeof input.toDate === 'function')
             return input.toDate();
-        }
-        if (input._seconds !== undefined) {
+        if (input._seconds !== undefined)
             return new Date(input._seconds * 1000);
-        }
-        if (input.seconds !== undefined) {
+        if (input.seconds !== undefined)
             return new Date(input.seconds * 1000);
-        }
         return new Date(input);
     }
     async assignShift(shiftData, userAuth) {
@@ -67,17 +64,17 @@ let SchedulingService = class SchedulingService {
                 const overlappingQuery = dbInstance.collection(SHIFTS_COLLECTION)
                     .where('employeeId', '==', employeeId)
                     .where('endTime', '>', newStart)
-                    .where('startTime', '<', newEnd)
-                    .limit(1);
+                    .limit(10);
                 const snapshot = await transaction.get(overlappingQuery);
-                if (!snapshot.empty) {
-                    const existingShift = snapshot.docs[0].data();
-                    const existingStart = this.convertToDate(existingShift.startTime);
-                    const existingEnd = this.convertToDate(existingShift.endTime);
-                    if (this.overlapService.isOverlap(existingStart, existingEnd, newStart, newEnd)) {
-                        console.error(`[SCHEDULING_ABORTED] Overlap detected for Employee: ${employeeId}.`);
-                        throw new functions.https.HttpsError('already-exists', 'El empleado ya tiene otro turno asignado en este horario.');
-                    }
+                const hasOverlap = snapshot.docs.some(doc => {
+                    const data = doc.data();
+                    const existStart = this.convertToDate(data.startTime);
+                    const existEnd = this.convertToDate(data.endTime);
+                    return this.overlapService.isOverlap(existStart, existEnd, newStart, newEnd);
+                });
+                if (hasOverlap) {
+                    console.error(`[SCHEDULING_ABORTED] Overlap detected for Employee: ${employeeId}.`);
+                    throw new functions.https.HttpsError('already-exists', 'El empleado ya tiene otro turno asignado en este horario.');
                 }
                 const finalShift = {
                     id: newShiftRef.id,
@@ -90,6 +87,7 @@ let SchedulingService = class SchedulingService {
                     status: 'Assigned',
                     schedulerId: userAuth.uid,
                     updatedAt: admin.firestore.Timestamp.now(),
+                    role: shiftData.role || 'Vigilador'
                 };
                 transaction.set(newShiftRef, finalShift);
                 return finalShift.id;
@@ -102,12 +100,30 @@ let SchedulingService = class SchedulingService {
             }
             const errorMessage = error.message || 'Error desconocido';
             if (errorMessage.includes('LÍMITE') || errorMessage.includes('BLOQUEO') || errorMessage.includes('ausente')) {
-                console.warn(`[BUSINESS_RULE_VIOLATION] ${errorMessage}`);
                 throw new functions.https.HttpsError('failed-precondition', errorMessage);
             }
             console.error(`[SCHEDULING_TRANSACTION_FAILURE] ${errorMessage}`, error.stack);
             throw new functions.https.HttpsError('internal', `Error en la asignación: ${errorMessage}`);
         }
+    }
+    async updateShift(shiftId, updateData) {
+        const db = this.getDb();
+        const shiftRef = db.collection(SHIFTS_COLLECTION).doc(shiftId);
+        const safeUpdate = { ...updateData };
+        delete safeUpdate.id;
+        delete safeUpdate.employeeId;
+        if (safeUpdate.startTime) {
+            safeUpdate.startTime = admin.firestore.Timestamp.fromDate(this.convertToDate(safeUpdate.startTime));
+        }
+        if (safeUpdate.endTime) {
+            safeUpdate.endTime = admin.firestore.Timestamp.fromDate(this.convertToDate(safeUpdate.endTime));
+        }
+        safeUpdate.updatedAt = admin.firestore.Timestamp.now();
+        await shiftRef.update(safeUpdate);
+    }
+    async deleteShift(shiftId) {
+        const db = this.getDb();
+        await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
     }
 };
 exports.SchedulingService = SchedulingService;

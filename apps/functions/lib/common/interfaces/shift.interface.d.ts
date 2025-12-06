@@ -12,4 +12,5 @@ export interface IShift {
     checkOutTime?: admin.firestore.Timestamp;
     schedulerId: string;
     updatedAt: admin.firestore.Timestamp;
+    role?: string;
 }

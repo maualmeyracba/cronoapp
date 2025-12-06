@@ -16,12 +16,11 @@ import { AbsenceService } from './data-management/absence.service';
 // Interfaces
 import { EmployeeRole } from './common/interfaces/employee.interface';
 
-// Inicialización de Firebase Admin
+// Inicialización
 if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-// Singleton para la App de NestJS (Contexto de Inyección de Dependencias)
 let nestApp: INestApplicationContext;
 
 async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
@@ -31,8 +30,8 @@ async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
   return nestApp.get<T>(service); 
 }
 
-// Constantes de Roles
-const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager'];
+// Roles Administrativos
+const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager'];
 const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee'];
 
 // =========================================================
@@ -51,11 +50,6 @@ export const createUser = functions.https.onCall(async (data, context) => {
     if (!ALLOWED_ROLES.includes(receivedRole as EmployeeRole)) {
        throw new functions.https.HttpsError('invalid-argument', 'Rol inválido.');
     }
-    
-    // Validación básica: El clientId es obligatorio para multi-tenancy
-    if (!clientId) {
-        throw new functions.https.HttpsError('invalid-argument', 'El ID de la empresa (clientId) es obligatorio.');
-    }
 
     const validRole = receivedRole as EmployeeRole;
 
@@ -64,7 +58,7 @@ export const createUser = functions.https.onCall(async (data, context) => {
         password, 
         validRole, 
         name,
-        { clientId, dni, fileNumber, address }
+        { clientId: clientId || '', dni, fileNumber, address }
     );
     return { success: true, uid: newEmployee.uid };
   } catch (error: any) {
@@ -76,7 +70,7 @@ export const createUser = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 2. MOTOR DE AGENDAMIENTO
+// 2. MOTOR DE AGENDAMIENTO (CREAR TURNOS)
 // =========================================================
 export const scheduleShift = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -93,6 +87,40 @@ export const scheduleShift = functions.https.onCall(async (data, context) => {
     if (error instanceof functions.https.HttpsError) throw error;
     console.error('[SCHEDULE_SHIFT_FATAL]', err.message);
     throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
+  }
+});
+
+// =========================================================
+// 10. GESTIÓN DE TURNOS (EDITAR / ELIMINAR) [NUEVO]
+// =========================================================
+export const manageShifts = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+    throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  }
+
+  const { action, payload } = data as { action: string, payload: any };
+
+  try {
+    const schedulingService = await getService(SchedulingService);
+
+    switch (action) {
+      case 'UPDATE_SHIFT':
+        await schedulingService.updateShift(payload.id, payload.data);
+        return { success: true, message: 'Turno actualizado.' };
+      
+      case 'DELETE_SHIFT':
+        await schedulingService.deleteShift(payload.id);
+        return { success: true, message: 'Turno eliminado.' };
+      
+      default:
+        throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+    }
+  } catch (error: any) {
+    const err = error as Error;
+    console.error(`[SHIFT_ERROR] Action ${action} failed:`, err.message);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', err.message);
   }
 });
 
@@ -141,7 +169,7 @@ export const manageData = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 5. GESTIÓN DE JERARQUÍA COMERCIAL
+// 5. GESTIÓN DE JERARQUÍA COMERCIAL (CLIENTES, OBJETIVOS, SERVICIOS)
 // =========================================================
 export const manageHierarchy = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -155,16 +183,39 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
     const clientService = await getService(ClientService);
 
     switch (action) {
+      // Clientes
       case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
       case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
       case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
-      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data);
-          return { success: true, message: 'Cliente actualizado' };
+      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
+      
+      // Objetivos (Sedes)
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
+      // 🛑 FIX: UPDATE OBJECTIVE
+      case 'UPDATE_OBJECTIVE': 
+          await clientService.updateObjective(payload.id, payload.data);
+          return { success: true, message: 'Objetivo actualizado correctamente' };
+      
+      // Contratos (Servicios)
       case 'CREATE_CONTRACT': return { success: true, data: await clientService.createServiceContract(payload) };
+      case 'UPDATE_CONTRACT': 
+          await clientService.updateServiceContract(payload.id, payload.data);
+          return { success: true, message: 'Servicio actualizado' };
+      case 'DELETE_CONTRACT': 
+          await clientService.deleteServiceContract(payload.id);
+          return { success: true, message: 'Servicio eliminado' };
+
+      // Modalidades (Tipos de Turno)
       case 'CREATE_SHIFT_TYPE': return { success: true, data: await clientService.createShiftType(payload) };
       case 'GET_SHIFT_TYPES': return { success: true, data: await clientService.getShiftTypesByContract(payload.contractId) };
+      case 'UPDATE_SHIFT_TYPE': 
+          await clientService.updateShiftType(payload.id, payload.data);
+          return { success: true, message: 'Modalidad actualizada' };
+      case 'DELETE_SHIFT_TYPE': 
+          await clientService.deleteShiftType(payload.id);
+          return { success: true, message: 'Modalidad eliminada' };
+      
       default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
   } catch (error: any) {
@@ -256,13 +307,11 @@ export const manageAbsences = functions.https.onCall(async (data, context) => {
 
   const { action, payload } = data as { action: string, payload: any };
 
-  // 🛑 FIX DE SEGURIDAD PARA SELF-REPORTING:
-  // Se permite si es Admin, O SI el empleado está reportando su propia ausencia.
   const isAdmin = ADMIN_ROLES.includes(callerAuth.token.role as string);
   const isSelf = payload.employeeId === callerAuth.uid;
 
   if (!isAdmin && !(isSelf && action === 'CREATE_ABSENCE')) {
-      throw new functions.https.HttpsError('permission-denied', 'Acceso denegado. No puede reportar ausencias para otros.');
+      throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
   }
 
   try {
@@ -295,7 +344,6 @@ export const checkSystemHealth = functions.https.onCall(async (data, context) =>
 
   const start = Date.now();
   try {
-    // Prueba de latencia con Firestore (listCollections es ligero)
     await admin.firestore().listCollections();
     const end = Date.now();
 

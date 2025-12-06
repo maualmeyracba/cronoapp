@@ -36,8 +36,7 @@ let ClientService = class ClientService {
     }
     async findAllClients() {
         try {
-            const snapshot = await this.getDb().collection(COLL_CLIENTS)
-                .get();
+            const snapshot = await this.getDb().collection(COLL_CLIENTS).get();
             if (snapshot.empty)
                 return [];
             return snapshot.docs.map(doc => ({
@@ -77,6 +76,16 @@ let ClientService = class ClientService {
             .get();
         return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     }
+    async updateObjective(id, data) {
+        const db = this.getDb();
+        const updateData = { ...data };
+        delete updateData.id;
+        if (updateData.location) {
+            updateData.location.latitude = Number(updateData.location.latitude);
+            updateData.location.longitude = Number(updateData.location.longitude);
+        }
+        await db.collection(COLL_OBJECTIVES).doc(id).update(updateData);
+    }
     async getClientById(clientId) {
         return this.getClient(clientId);
     }
@@ -108,6 +117,16 @@ let ClientService = class ClientService {
         await ref.set(newContract);
         return newContract;
     }
+    async updateServiceContract(id, data) {
+        const db = this.getDb();
+        const updateData = { ...data };
+        delete updateData.id;
+        await db.collection(COLL_CONTRACTS).doc(id).update(updateData);
+    }
+    async deleteServiceContract(id) {
+        const db = this.getDb();
+        await db.collection(COLL_CONTRACTS).doc(id).delete();
+    }
     async createShiftType(data) {
         const db = this.getDb();
         const ref = db.collection(COLL_SHIFT_TYPES).doc();
@@ -123,6 +142,16 @@ let ClientService = class ClientService {
             .where('contractId', '==', contractId)
             .get();
         return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+    async updateShiftType(id, data) {
+        const db = this.getDb();
+        const updateData = { ...data };
+        delete updateData.id;
+        await db.collection(COLL_SHIFT_TYPES).doc(id).update(updateData);
+    }
+    async deleteShiftType(id) {
+        const db = this.getDb();
+        await db.collection(COLL_SHIFT_TYPES).doc(id).delete();
     }
 };
 exports.ClientService = ClientService;

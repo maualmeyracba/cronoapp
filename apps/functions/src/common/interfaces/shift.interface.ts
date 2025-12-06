@@ -1,5 +1,4 @@
-// apps/functions/src/common/interfaces/shift.interface.ts
-import * as admin from 'firebase-admin'; // 🛑 CAMBIO CLAVE: Importar el módulo core de admin
+import * as admin from 'firebase-admin';
 
 export interface IShift {
   id: string;
@@ -7,12 +6,18 @@ export interface IShift {
   employeeName: string;
   objectiveId: string;
   objectiveName: string;
-  // 🛑 Referenciar el Timestamp a través del namespace de admin.
+  
   startTime: admin.firestore.Timestamp; 
   endTime: admin.firestore.Timestamp;
+  
   status: 'Assigned' | 'Confirmed' | 'InProgress' | 'Completed' | 'Canceled';
+  
   checkInTime?: admin.firestore.Timestamp;
   checkOutTime?: admin.firestore.Timestamp;
+  
   schedulerId: string;
   updatedAt: admin.firestore.Timestamp;
+  
+  // 🛑 FIX: Agregamos el campo role para evitar el error en el servicio
+  role?: string; 
 }
