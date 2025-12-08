@@ -3,7 +3,8 @@ export declare class PatternService {
     private getDb;
     createPattern(payload: IPatternPayload, userId: string): Promise<IServicePattern>;
     getPatternsByContract(contractId: string): Promise<IServicePattern[]>;
-    generateVacancies(contractId: string, month: number, year: number): Promise<{
+    deletePattern(id: string): Promise<void>;
+    generateVacancies(contractId: string, month: number, year: number, objectiveId: string): Promise<{
         created: number;
         message: string;
     }>;

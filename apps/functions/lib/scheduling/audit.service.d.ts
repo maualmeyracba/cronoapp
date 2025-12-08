@@ -9,5 +9,5 @@ export declare class AuditService {
     auditShiftAction(shiftId: string, action: 'CHECK_IN' | 'CHECK_OUT', employeeCoords: {
         latitude: number;
         longitude: number;
-    }, employeeUid: string): Promise<IShift>;
+    } | null, actorUid: string, actorRole: string, isManualOverride: boolean): Promise<IShift>;
 }

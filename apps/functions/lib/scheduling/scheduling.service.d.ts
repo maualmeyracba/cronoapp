@@ -11,4 +11,8 @@ export declare class SchedulingService {
     assignShift(shiftData: Partial<IShift>, userAuth: admin.auth.DecodedIdToken): Promise<IShift>;
     updateShift(shiftId: string, updateData: Partial<IShift>): Promise<void>;
     deleteShift(shiftId: string): Promise<void>;
+    replicateDailyStructure(objectiveId: string, sourceDateStr: string, targetStartDateStr: string, targetEndDateStr: string, schedulerId: string): Promise<{
+        created: number;
+        skipped: number;
+    }>;
 }

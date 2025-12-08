@@ -16,21 +16,25 @@ export class AuditService {
     private readonly dmService: DataManagementService,
   ) {}
 
-  // Inicialización diferida de Firestore
   private getDb = () => admin.app().firestore();
 
+  /**
+   * Procesa el fichaje (Check-in/out) validando reglas de negocio, GPS y permisos.
+   * Soporta modo "Manual Override" para operadores.
+   */
   async auditShiftAction(
     shiftId: string,
     action: 'CHECK_IN' | 'CHECK_OUT',
-    employeeCoords: { latitude: number, longitude: number },
-    employeeUid: string,
+    employeeCoords: { latitude: number, longitude: number } | null, // Puede ser null en manual
+    actorUid: string,
+    actorRole: string,          // 🛑 NUEVO: Rol de quien ejecuta
+    isManualOverride: boolean   // 🛑 NUEVO: Bandera de fuerza mayor
   ): Promise<IShift> {
     
     const dbInstance = this.getDb();
     const shiftRef = dbInstance.collection(SHIFTS_COLLECTION).doc(shiftId);
 
     return dbInstance.runTransaction(async (transaction) => {
-      // 1. Obtener el Turno
       const shiftDoc = await transaction.get(shiftRef);
 
       if (!shiftDoc.exists) {
@@ -39,80 +43,105 @@ export class AuditService {
 
       const shift = shiftDoc.data() as IShift;
       
-      // 🛑 REGLA 1: Autorización de Propiedad
-      if (shift.employeeId !== employeeUid) {
-        throw new ForbiddenException('No estás autorizado para gestionar este turno.');
+      // --- VALIDACIÓN DE PERMISOS ---
+      const isOwner = shift.employeeId === actorUid;
+      const isAdminOrOperator = ['admin', 'SuperAdmin', 'Manager', 'Operator', 'Scheduler', 'Supervisor'].includes(actorRole);
+
+      // Si no es el dueño y no es admin, fuera.
+      if (!isOwner && !isAdminOrOperator) {
+        throw new ForbiddenException('No tienes permiso para gestionar este turno.');
       }
       
-      // 🛑 REGLA 2: Validación Temporal (Anti-Anticipación)
-      // Esta validación va ANTES del Geofence para dar feedback más útil.
+      // --- REGLAS DE NEGOCIO ---
       const now = admin.firestore.Timestamp.now();
-      
-      if (action === 'CHECK_IN') {
-          const shiftStartMillis = shift.startTime.toMillis();
-          const nowMillis = now.toMillis();
+
+      if (!isManualOverride) {
+          // MODO ESTÁNDAR (Empleado con Celular)
           
-          // Diferencia en milisegundos (Positivo = Futuro, Negativo = Pasado/Tarde)
-          const diffMillis = shiftStartMillis - nowMillis;
-          const diffMinutes = diffMillis / (1000 * 60);
+          // 1. Identidad: Solo el asignado puede fichar normal
+          if (!isOwner) throw new ForbiddenException('Solo el empleado asignado puede fichar desde la app.');
           
-          // Tolerancia: Solo se permite fichar 10 minutos antes del inicio
-          const TOLERANCE_MINUTES = 10; 
-          
-          // Si faltan más de 10 minutos, bloqueamos.
-          if (diffMinutes > TOLERANCE_MINUTES) {
-              throw new functions.https.HttpsError(
-                  'failed-precondition', 
-                  `⏳ Es muy temprano. El fichaje se habilita ${TOLERANCE_MINUTES} minutos antes del inicio del turno.`
-              );
+          // 2. Tiempo (Anti-Anticipación)
+          if (action === 'CHECK_IN') {
+              const shiftStartMillis = shift.startTime.toMillis();
+              const diffMinutes = (shiftStartMillis - now.toMillis()) / (1000 * 60);
+              const TOLERANCE = 10; // minutos
+
+              if (diffMinutes > TOLERANCE) {
+                  throw new functions.https.HttpsError(
+                      'failed-precondition', 
+                      `⏳ Muy temprano. Fichaje habilitado ${TOLERANCE} min antes.`
+                  );
+              }
           }
-      }
 
-      // 🛑 REGLA 3: Verificación de Geofence (Ubicación)
-      // Obtenemos el objetivo para saber sus coordenadas
-      const objective = await this.dmService.getObjectiveById(shift.objectiveId) as IObjective; 
-      const objectiveCoords = objective.location;
+          // 3. Ubicación (Geofence)
+          const objective = await this.dmService.getObjectiveById(shift.objectiveId) as IObjective; 
+          
+          // Validamos que vengan coordenadas
+          if (!employeeCoords || !employeeCoords.latitude) {
+               throw new functions.https.HttpsError('invalid-argument', 'Se requiere ubicación GPS.');
+          }
 
-      if (!this.geofencingService.isInGeofence(employeeCoords, objectiveCoords)) {
-        console.warn(`[GEOFENCE_FAIL] Employee ${employeeUid} outside range for Shift ${shiftId}.`);
-        throw new functions.https.HttpsError(
-            'failed-precondition', 
-            '📍 Estás demasiado lejos del objetivo. Acércate a la sede para fichar.'
-        );
+          if (!this.geofencingService.isInGeofence(employeeCoords, objective.location)) {
+            console.warn(`[GEOFENCE_FAIL] User ${actorUid} far from objective.`);
+            throw new functions.https.HttpsError(
+                'failed-precondition', 
+                '📍 Estás demasiado lejos del objetivo. Acércate a la sede.'
+            );
+          }
+
+      } else {
+          // MODO MANUAL (Operador desde Torre de Control)
+          
+          // 1. Permisos: Solo admins
+          if (!isAdminOrOperator) {
+              throw new ForbiddenException('Solo supervisores pueden forzar el fichaje manual.');
+          }
+          
+          console.log(`[MANUAL_OVERRIDE] Turno ${shiftId} forzado por ${actorUid} (${actorRole})`);
       }
       
-      // 🛑 REGLA 4: Transición de Estado
+      // --- TRANSICIÓN DE ESTADO ---
       let newStatus: IShift['status'];
 
       if (action === 'CHECK_IN') {
-          if (shift.status !== 'Assigned') {
-              throw new BadRequestException(`No se puede dar presente. El estado actual es: ${shift.status}`);
-          }
-          newStatus = 'InProgress';
-          shift.checkInTime = now;
+        // Permitimos re-fichar si estaba en Assigned, o corregir si hubo error
+        if (shift.status !== 'Assigned' && !isManualOverride) {
+            throw new BadRequestException(`Estado incorrecto para entrada: ${shift.status}`);
+        }
+        newStatus = 'InProgress';
+        shift.checkInTime = now;
+
       } else if (action === 'CHECK_OUT') {
-          if (shift.status !== 'InProgress') {
-              throw new BadRequestException(`No se puede finalizar. El turno no está en curso (Estado: ${shift.status})`);
-          }
-          newStatus = 'Completed';
-          shift.checkOutTime = now;
+        if (shift.status !== 'InProgress' && !isManualOverride) {
+            throw new BadRequestException(`El turno no está en curso (Estado: ${shift.status})`);
+        }
+        newStatus = 'Completed';
+        shift.checkOutTime = now;
+
       } else {
-          throw new BadRequestException(`Acción desconocida: ${action}`);
+        throw new BadRequestException(`Acción inválida: ${action}`);
       }
       
-      // Actualización Atómica en Base de Datos
-      shift.status = newStatus;
-      shift.updatedAt = now;
-      
-      // Solo actualizamos los campos que cambiaron para eficiencia
-      transaction.update(shiftRef, {
+      // --- ACTUALIZACIÓN ---
+      const updateData: any = {
           status: newStatus,
+          updatedAt: now,
           checkInTime: shift.checkInTime,
-          checkOutTime: shift.checkOutTime,
-          updatedAt: now
-      });
+          checkOutTime: shift.checkOutTime
+      };
 
-      return shift;
+      // Si fue manual, dejamos marca de auditoría
+      if (isManualOverride) {
+          updateData.isManualRecord = true;
+          updateData.processedBy = actorUid; // Guardamos quién lo forzó
+          updateData.manualReason = 'Operador Torre de Control';
+      }
+
+      transaction.update(shiftRef, updateData);
+
+      return { ...shift, ...updateData };
     });
   }
 }

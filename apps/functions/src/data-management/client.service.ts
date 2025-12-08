@@ -68,7 +68,7 @@ export class ClientService {
   }
 
   // ==========================================
-  // 2. GESTIÓN DE OBJETIVOS (SEDES)
+  // 2. GESTIÓN DE OBJETIVOS
   // ==========================================
 
   async createObjective(data: Omit<IObjective, 'id'>): Promise<IObjective> {
@@ -90,7 +90,7 @@ export class ClientService {
     return snapshot.docs.map(d => ({ id: d.id, ...d.data() }) as IObjective);
   }
 
-  // Método de actualización para Objetivos
+  // 🛑 NUEVO: Actualizar Objetivo
   async updateObjective(id: string, data: Partial<IObjective>): Promise<void> {
     const db = this.getDb();
     const updateData = { ...data };
@@ -144,6 +144,7 @@ export class ClientService {
     return newContract;
   }
 
+  // 🛑 NUEVO: Actualizar Contrato
   async updateServiceContract(id: string, data: Partial<IServiceContract>): Promise<void> {
     const db = this.getDb();
     const updateData = { ...data };
@@ -151,6 +152,7 @@ export class ClientService {
     await db.collection(COLL_CONTRACTS).doc(id).update(updateData);
   }
 
+  // 🛑 NUEVO: Eliminar Contrato
   async deleteServiceContract(id: string): Promise<void> {
     const db = this.getDb();
     await db.collection(COLL_CONTRACTS).doc(id).delete();
@@ -179,6 +181,7 @@ export class ClientService {
     return snapshot.docs.map(d => ({ id: d.id, ...d.data() }) as IShiftType);
   }
 
+  // 🛑 NUEVO: Actualizar Modalidad
   async updateShiftType(id: string, data: Partial<IShiftType>): Promise<void> {
     const db = this.getDb();
     const updateData = { ...data };
@@ -186,6 +189,7 @@ export class ClientService {
     await db.collection(COLL_SHIFT_TYPES).doc(id).update(updateData);
   }
 
+  // 🛑 NUEVO: Eliminar Modalidad
   async deleteShiftType(id: string): Promise<void> {
     const db = this.getDb();
     await db.collection(COLL_SHIFT_TYPES).doc(id).delete();

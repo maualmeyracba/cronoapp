@@ -12,6 +12,7 @@ import { ClientService } from './data-management/client.service';
 import { EmployeeService } from './data-management/employee.service';
 import { SystemUserService } from './data-management/system-user.service';
 import { AbsenceService } from './data-management/absence.service';
+import { PatternService } from './scheduling/pattern.service';
 
 // Interfaces
 import { EmployeeRole } from './common/interfaces/employee.interface';
@@ -31,7 +32,7 @@ async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
 }
 
 // Roles Administrativos
-const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager'];
+const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager', 'Operator', 'Supervisor'];
 const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee'];
 
 // =========================================================
@@ -91,11 +92,14 @@ export const scheduleShift = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 10. GESTIÓN DE TURNOS (EDITAR / ELIMINAR) [NUEVO]
+// 10. GESTIÓN DE TURNOS (EDITAR / ELIMINAR / REPLICAR)
 // =========================================================
 export const manageShifts = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
-  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+  // Permitimos roles de planificación
+  const ALLOWED_PLANNING_ROLES = ['admin', 'SuperAdmin', 'Manager', 'Scheduler'];
+
+  if (!callerAuth || !ALLOWED_PLANNING_ROLES.includes(callerAuth.token.role as string)) {
     throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
   }
 
@@ -113,6 +117,24 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
         await schedulingService.deleteShift(payload.id);
         return { success: true, message: 'Turno eliminado.' };
       
+      // 🛑 NUEVA LÓGICA: Replicación Masiva
+      case 'REPLICATE_STRUCTURE':
+        if (!payload.objectiveId || !payload.sourceDate || !payload.targetStartDate || !payload.targetEndDate) {
+            throw new functions.https.HttpsError('invalid-argument', 'Faltan fechas para replicar.');
+        }
+        const result = await schedulingService.replicateDailyStructure(
+            payload.objectiveId,
+            payload.sourceDate,
+            payload.targetStartDate,
+            payload.targetEndDate,
+            callerAuth.uid
+        );
+        return { 
+            success: true, 
+            data: result, 
+            message: `Replicado: ${result.created} turnos. (Omitidos: ${result.skipped} días)` 
+        };
+
       default:
         throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
@@ -125,14 +147,25 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 3. AUDITORÍA (GEOFENCING)
+// 3. AUDITORÍA (GEOFENCING & MANUAL OVERRIDE)
 // =========================================================
 export const auditShift = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
 
+  const { shiftId, action, coords, isManualOverride } = data;
+
   try {
     const auditService = await getService(AuditService);
-    const result = await auditService.auditShiftAction(data.shiftId, data.action, data.coords, context.auth.uid);
+    
+    const result = await auditService.auditShiftAction(
+        shiftId, 
+        action, 
+        coords || null, 
+        context.auth.uid,
+        context.auth.token.role as string, // Rol del token
+        isManualOverride || false          // Bandera manual
+    );
+    
     return { success: true, newStatus: result.status };
   } catch (error: any) {
     const err = error as Error;
@@ -187,12 +220,12 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
       case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
       case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
       case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
-      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
+      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data);
+          return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
-      
-      // Objetivos (Sedes)
+
+      // Objetivos
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
-      // 🛑 FIX: UPDATE OBJECTIVE
       case 'UPDATE_OBJECTIVE': 
           await clientService.updateObjective(payload.id, payload.data);
           return { success: true, message: 'Objetivo actualizado correctamente' };
@@ -331,6 +364,39 @@ export const manageAbsences = functions.https.onCall(async (data, context) => {
         throw new functions.https.HttpsError('failed-precondition', err.message);
     }
     throw new functions.https.HttpsError('internal', err.message);
+  }
+});
+
+// =========================================================
+// 11. GESTIÓN DE PATRONES DE SERVICIO (AUTOMATIZACIÓN)
+// =========================================================
+export const managePatterns = functions.https.onCall(async (data, context) => {
+  const callerAuth = context.auth;
+  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+      throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+  }
+
+  const { action, payload } = data as { action: string, payload: any };
+
+  try {
+    const patternService = await getService(PatternService);
+
+    switch(action) {
+        case 'CREATE_PATTERN': return patternService.createPattern(payload, callerAuth.uid);
+        case 'GET_PATTERNS': return patternService.getPatternsByContract(payload.contractId);
+        case 'DELETE_PATTERN': await patternService.deletePattern(payload.id); return { success: true };
+        case 'GENERATE_VACANCIES': 
+            return patternService.generateVacancies(
+                payload.contractId, 
+                payload.month, 
+                payload.year, 
+                payload.objectiveId 
+            );
+        default: throw new functions.https.HttpsError('invalid-argument', 'Acción inválida');
+    }
+  } catch (error: any) {
+      console.error(`[PATTERN_ERROR] Action ${action} failed:`, error.message);
+      throw new functions.https.HttpsError('internal', error.message);
   }
 });
 

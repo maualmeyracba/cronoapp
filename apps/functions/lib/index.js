@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.checkSystemHealth = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.scheduleShift = exports.createUser = void 0;
+exports.checkSystemHealth = exports.managePatterns = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.manageShifts = exports.scheduleShift = exports.createUser = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const main_1 = require("./main");
@@ -12,6 +12,7 @@ const client_service_1 = require("./data-management/client.service");
 const employee_service_1 = require("./data-management/employee.service");
 const system_user_service_1 = require("./data-management/system-user.service");
 const absence_service_1 = require("./data-management/absence.service");
+const pattern_service_1 = require("./scheduling/pattern.service");
 if (!admin.apps.length) {
     admin.initializeApp();
 }
@@ -22,7 +23,7 @@ async function getService(service) {
     }
     return nestApp.get(service);
 }
-const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager'];
+const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager', 'Operator', 'Supervisor'];
 const ALLOWED_ROLES = ['admin', 'employee'];
 exports.createUser = functions.https.onCall(async (data, context) => {
     const callerAuth = context.auth;
@@ -65,12 +66,51 @@ exports.scheduleShift = functions.https.onCall(async (data, context) => {
         throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
     }
 });
+exports.manageShifts = functions.https.onCall(async (data, context) => {
+    const callerAuth = context.auth;
+    const ALLOWED_PLANNING_ROLES = ['admin', 'SuperAdmin', 'Manager', 'Scheduler'];
+    if (!callerAuth || !ALLOWED_PLANNING_ROLES.includes(callerAuth.token.role)) {
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+    }
+    const { action, payload } = data;
+    try {
+        const schedulingService = await getService(scheduling_service_1.SchedulingService);
+        switch (action) {
+            case 'UPDATE_SHIFT':
+                await schedulingService.updateShift(payload.id, payload.data);
+                return { success: true, message: 'Turno actualizado.' };
+            case 'DELETE_SHIFT':
+                await schedulingService.deleteShift(payload.id);
+                return { success: true, message: 'Turno eliminado.' };
+            case 'REPLICATE_STRUCTURE':
+                if (!payload.objectiveId || !payload.sourceDate || !payload.targetStartDate || !payload.targetEndDate) {
+                    throw new functions.https.HttpsError('invalid-argument', 'Faltan fechas para replicar.');
+                }
+                const result = await schedulingService.replicateDailyStructure(payload.objectiveId, payload.sourceDate, payload.targetStartDate, payload.targetEndDate, callerAuth.uid);
+                return {
+                    success: true,
+                    data: result,
+                    message: `Replicado: ${result.created} turnos. (Omitidos: ${result.skipped} días)`
+                };
+            default:
+                throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+        }
+    }
+    catch (error) {
+        const err = error;
+        console.error(`[SHIFT_ERROR] Action ${action} failed:`, err.message);
+        if (error instanceof functions.https.HttpsError)
+            throw error;
+        throw new functions.https.HttpsError('internal', err.message);
+    }
+});
 exports.auditShift = functions.https.onCall(async (data, context) => {
     if (!context.auth)
         throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
+    const { shiftId, action, coords, isManualOverride } = data;
     try {
         const auditService = await getService(audit_service_1.AuditService);
-        const result = await auditService.auditShiftAction(data.shiftId, data.action, data.coords, context.auth.uid);
+        const result = await auditService.auditShiftAction(shiftId, action, coords || null, context.auth.uid, context.auth.token.role, isManualOverride || false);
         return { success: true, newStatus: result.status };
     }
     catch (error) {
@@ -243,6 +283,30 @@ exports.manageAbsences = functions.https.onCall(async (data, context) => {
             throw new functions.https.HttpsError('failed-precondition', err.message);
         }
         throw new functions.https.HttpsError('internal', err.message);
+    }
+});
+exports.managePatterns = functions.https.onCall(async (data, context) => {
+    const callerAuth = context.auth;
+    if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+    }
+    const { action, payload } = data;
+    try {
+        const patternService = await getService(pattern_service_1.PatternService);
+        switch (action) {
+            case 'CREATE_PATTERN': return patternService.createPattern(payload, callerAuth.uid);
+            case 'GET_PATTERNS': return patternService.getPatternsByContract(payload.contractId);
+            case 'DELETE_PATTERN':
+                await patternService.deletePattern(payload.id);
+                return { success: true };
+            case 'GENERATE_VACANCIES':
+                return patternService.generateVacancies(payload.contractId, payload.month, payload.year, payload.objectiveId);
+            default: throw new functions.https.HttpsError('invalid-argument', 'Acción inválida');
+        }
+    }
+    catch (error) {
+        console.error(`[PATTERN_ERROR] Action ${action} failed:`, error.message);
+        throw new functions.https.HttpsError('internal', error.message);
     }
 });
 exports.checkSystemHealth = functions.https.onCall(async (data, context) => {

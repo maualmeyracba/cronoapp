@@ -22,7 +22,7 @@ let AuditService = class AuditService {
         this.dmService = dmService;
         this.getDb = () => admin.app().firestore();
     }
-    async auditShiftAction(shiftId, action, employeeCoords, employeeUid) {
+    async auditShiftAction(shiftId, action, employeeCoords, actorUid, actorRole, isManualOverride) {
         const dbInstance = this.getDb();
         const shiftRef = dbInstance.collection(SHIFTS_COLLECTION).doc(shiftId);
         return dbInstance.runTransaction(async (transaction) => {
@@ -31,53 +31,69 @@ let AuditService = class AuditService {
                 throw new common_1.BadRequestException('El turno no existe.');
             }
             const shift = shiftDoc.data();
-            if (shift.employeeId !== employeeUid) {
-                throw new common_1.ForbiddenException('No estás autorizado para gestionar este turno.');
+            const isOwner = shift.employeeId === actorUid;
+            const isAdminOrOperator = ['admin', 'SuperAdmin', 'Manager', 'Operator', 'Scheduler', 'Supervisor'].includes(actorRole);
+            if (!isOwner && !isAdminOrOperator) {
+                throw new common_1.ForbiddenException('No tienes permiso para gestionar este turno.');
             }
             const now = admin.firestore.Timestamp.now();
-            if (action === 'CHECK_IN') {
-                const shiftStartMillis = shift.startTime.toMillis();
-                const nowMillis = now.toMillis();
-                const diffMillis = shiftStartMillis - nowMillis;
-                const diffMinutes = diffMillis / (1000 * 60);
-                const TOLERANCE_MINUTES = 10;
-                if (diffMinutes > TOLERANCE_MINUTES) {
-                    throw new functions.https.HttpsError('failed-precondition', `⏳ Es muy temprano. El fichaje se habilita ${TOLERANCE_MINUTES} minutos antes del inicio del turno.`);
+            if (!isManualOverride) {
+                if (!isOwner)
+                    throw new common_1.ForbiddenException('Solo el empleado asignado puede fichar desde la app.');
+                if (action === 'CHECK_IN') {
+                    const shiftStartMillis = shift.startTime.toMillis();
+                    const diffMinutes = (shiftStartMillis - now.toMillis()) / (1000 * 60);
+                    const TOLERANCE = 10;
+                    if (diffMinutes > TOLERANCE) {
+                        throw new functions.https.HttpsError('failed-precondition', `⏳ Muy temprano. Fichaje habilitado ${TOLERANCE} min antes.`);
+                    }
+                }
+                const objective = await this.dmService.getObjectiveById(shift.objectiveId);
+                if (!employeeCoords || !employeeCoords.latitude) {
+                    throw new functions.https.HttpsError('invalid-argument', 'Se requiere ubicación GPS.');
+                }
+                if (!this.geofencingService.isInGeofence(employeeCoords, objective.location)) {
+                    console.warn(`[GEOFENCE_FAIL] User ${actorUid} far from objective.`);
+                    throw new functions.https.HttpsError('failed-precondition', '📍 Estás demasiado lejos del objetivo. Acércate a la sede.');
                 }
             }
-            const objective = await this.dmService.getObjectiveById(shift.objectiveId);
-            const objectiveCoords = objective.location;
-            if (!this.geofencingService.isInGeofence(employeeCoords, objectiveCoords)) {
-                console.warn(`[GEOFENCE_FAIL] Employee ${employeeUid} outside range for Shift ${shiftId}.`);
-                throw new functions.https.HttpsError('failed-precondition', '📍 Estás demasiado lejos del objetivo. Acércate a la sede para fichar.');
+            else {
+                if (!isAdminOrOperator) {
+                    throw new common_1.ForbiddenException('Solo supervisores pueden forzar el fichaje manual.');
+                }
+                console.log(`[MANUAL_OVERRIDE] Turno ${shiftId} forzado por ${actorUid} (${actorRole})`);
             }
             let newStatus;
             if (action === 'CHECK_IN') {
-                if (shift.status !== 'Assigned') {
-                    throw new common_1.BadRequestException(`No se puede dar presente. El estado actual es: ${shift.status}`);
+                if (shift.status !== 'Assigned' && !isManualOverride) {
+                    throw new common_1.BadRequestException(`Estado incorrecto para entrada: ${shift.status}`);
                 }
                 newStatus = 'InProgress';
                 shift.checkInTime = now;
             }
             else if (action === 'CHECK_OUT') {
-                if (shift.status !== 'InProgress') {
-                    throw new common_1.BadRequestException(`No se puede finalizar. El turno no está en curso (Estado: ${shift.status})`);
+                if (shift.status !== 'InProgress' && !isManualOverride) {
+                    throw new common_1.BadRequestException(`El turno no está en curso (Estado: ${shift.status})`);
                 }
                 newStatus = 'Completed';
                 shift.checkOutTime = now;
             }
             else {
-                throw new common_1.BadRequestException(`Acción desconocida: ${action}`);
+                throw new common_1.BadRequestException(`Acción inválida: ${action}`);
             }
-            shift.status = newStatus;
-            shift.updatedAt = now;
-            transaction.update(shiftRef, {
+            const updateData = {
                 status: newStatus,
+                updatedAt: now,
                 checkInTime: shift.checkInTime,
-                checkOutTime: shift.checkOutTime,
-                updatedAt: now
-            });
-            return shift;
+                checkOutTime: shift.checkOutTime
+            };
+            if (isManualOverride) {
+                updateData.isManualRecord = true;
+                updateData.processedBy = actorUid;
+                updateData.manualReason = 'Operador Torre de Control';
+            }
+            transaction.update(shiftRef, updateData);
+            return { ...shift, ...updateData };
         });
     }
 };
