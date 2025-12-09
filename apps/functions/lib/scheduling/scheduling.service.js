@@ -153,7 +153,7 @@ let SchedulingService = class SchedulingService {
             .where('startTime', '<=', admin.firestore.Timestamp.fromDate(endSource))
             .get();
         if (sourceShiftsSnap.empty) {
-            throw new functions.https.HttpsError('not-found', 'No hay turnos en el día origen para copiar.');
+            throw new functions.https.HttpsError('not-found', 'El día origen no tiene turnos.');
         }
         const sourceShifts = sourceShiftsSnap.docs.map(doc => doc.data());
         const batch = db.batch();
@@ -171,12 +171,19 @@ let SchedulingService = class SchedulingService {
                 .where('objectiveId', '==', objectiveId)
                 .where('startTime', '>=', admin.firestore.Timestamp.fromDate(dayStart))
                 .where('startTime', '<=', admin.firestore.Timestamp.fromDate(dayEnd))
-                .limit(1)
                 .get();
-            if (!existingCheck.empty) {
+            if (existingCheck.empty) {
                 skipped++;
                 continue;
             }
+            const existingShifts = existingCheck.docs.map(doc => ({ ref: doc.ref, data: doc.data() }));
+            const hasRealEmployees = existingShifts.some(s => s.data.employeeId !== 'VACANTE');
+            if (hasRealEmployees) {
+                skipped++;
+                continue;
+            }
+            existingShifts.forEach(s => batch.delete(s.ref));
+            opCount += existingShifts.length;
             for (const template of sourceShifts) {
                 const tStart = this.convertToDate(template.startTime);
                 const tEnd = this.convertToDate(template.endTime);

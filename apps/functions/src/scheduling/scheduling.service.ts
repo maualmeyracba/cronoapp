@@ -26,7 +26,7 @@ export class SchedulingService {
 
   // --- CREAR TURNO INDIVIDUAL (Desde cero) ---
   async assignShift(shiftData: Partial<IShift>, userAuth: admin.auth.DecodedIdToken): Promise<IShift> {
-    const dbInstance = this.getDb(); 
+    const dbInstance = this.getDb();
     const newShiftRef = dbInstance.collection(SHIFTS_COLLECTION).doc();
 
     if (!shiftData.startTime || !shiftData.endTime || !shiftData.employeeId || !shiftData.objectiveId) {
@@ -35,7 +35,6 @@ export class SchedulingService {
     
     let newStart: Date;
     let newEnd: Date;
-
     try {
         newStart = this.convertToDate(shiftData.startTime);
         newEnd = this.convertToDate(shiftData.endTime);
@@ -93,7 +92,6 @@ export class SchedulingService {
         transaction.set(newShiftRef, finalShift);
         return finalShift.id; 
       });
-
       return { id: newShiftRef.id, ...shiftData } as IShift;
 
     } catch (error: any) {
@@ -107,39 +105,31 @@ export class SchedulingService {
   }
 
   // --- EDITAR TURNO (O ASIGNAR VACANTE) ---
-  // 🛑 FIX: Permite actualizar employeeId y valida conflictos
   async updateShift(shiftId: string, updateData: Partial<IShift>): Promise<void> {
       const db = this.getDb();
       const shiftRef = db.collection(SHIFTS_COLLECTION).doc(shiftId);
       
-      // 1. Obtener datos actuales
       const currentDoc = await shiftRef.get();
       if (!currentDoc.exists) throw new functions.https.HttpsError('not-found', 'Turno no encontrado');
       const currentShift = currentDoc.data() as IShift;
 
-      // 2. Calcular valores finales (Mezcla lo nuevo con lo viejo)
       const effectiveEmployeeId = updateData.employeeId || currentShift.employeeId;
       const effectiveStart = updateData.startTime ? this.convertToDate(updateData.startTime) : this.convertToDate(currentShift.startTime);
       const effectiveEnd = updateData.endTime ? this.convertToDate(updateData.endTime) : this.convertToDate(currentShift.endTime);
 
-      // 3. VALIDACIÓN DE NEGOCIO (Si es empleado real y cambiaron datos clave)
       const isRealEmployee = effectiveEmployeeId !== 'VACANTE';
       const hasChanged = updateData.employeeId !== undefined || updateData.startTime !== undefined || updateData.endTime !== undefined;
 
       if (isRealEmployee && hasChanged) {
            try {
-               // 🛑 FIX: Pasamos shiftId para excluirlo de la validación (evitar auto-solapamiento)
                await this.workloadService.validateAssignment(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
            } catch (e: any) {
                throw new functions.https.HttpsError('failed-precondition', e.message);
            }
       }
 
-      // 4. Preparar Update
       const safeUpdate = { ...updateData };
       delete (safeUpdate as any).id; 
-      
-      // 🛑 IMPORTANTE: NO BORRAMOS employeeId NI employeeName
       
       if (safeUpdate.startTime) safeUpdate.startTime = admin.firestore.Timestamp.fromDate(effectiveStart);
       if (safeUpdate.endTime) safeUpdate.endTime = admin.firestore.Timestamp.fromDate(effectiveEnd);
@@ -155,7 +145,7 @@ export class SchedulingService {
       await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
   }
 
-  // --- REPLICAR ESTRUCTURA (Clonar Días) ---
+  // --- REPLICAR ESTRUCTURA (LÓGICA CORREGIDA) ---
   async replicateDailyStructure(
     objectiveId: string, 
     sourceDateStr: string, 
@@ -164,9 +154,9 @@ export class SchedulingService {
     schedulerId: string
   ): Promise<{ created: number, skipped: number }> {
     const db = this.getDb();
-
-    // Usamos UTC para consistencia absoluta de fechas
-    const sourceDate = new Date(sourceDateStr + 'T12:00:00Z'); 
+    
+    // Origen: UTC para precisión
+    const sourceDate = new Date(sourceDateStr + 'T12:00:00Z');
     const startSource = new Date(sourceDate); startSource.setUTCHours(0,0,0,0);
     const endSource = new Date(sourceDate); endSource.setUTCHours(23,59,59,999);
 
@@ -177,7 +167,7 @@ export class SchedulingService {
         .get();
 
     if (sourceShiftsSnap.empty) {
-        throw new functions.https.HttpsError('not-found', 'No hay turnos en el día origen para copiar.');
+        throw new functions.https.HttpsError('not-found', 'El día origen no tiene turnos.');
     }
 
     const sourceShifts = sourceShiftsSnap.docs.map(doc => doc.data() as IShift);
@@ -193,7 +183,6 @@ export class SchedulingService {
     // Bucle día por día
     for (let d = new Date(startTarget); d <= endTarget; d.setDate(d.getDate() + 1)) {
         
-        // Verificamos si ya hay turnos ese día para no pisar
         const dayStart = new Date(d); dayStart.setUTCHours(0,0,0,0);
         const dayEnd = new Date(d); dayEnd.setUTCHours(23,59,59,999);
         
@@ -201,19 +190,35 @@ export class SchedulingService {
             .where('objectiveId', '==', objectiveId)
             .where('startTime', '>=', admin.firestore.Timestamp.fromDate(dayStart))
             .where('startTime', '<=', admin.firestore.Timestamp.fromDate(dayEnd))
-            .limit(1)
             .get();
 
-        if (!existingCheck.empty) {
-            skipped++;
+        // 🛑 LÓGICA DE NEGOCIO "COPIAR":
+        // 1. Si el día está vacío -> SKIP (No crear estructura de la nada, solo llenar existentes).
+        // 2. Si el día tiene turnos REALES (Asignados) -> SKIP (No pisar gente).
+        // 3. Si el día tiene SOLO VACANTES -> BORRAR Y REEMPLAZAR (Llenar estructura).
+
+        if (existingCheck.empty) {
+            skipped++; // Regla: "no asi donde no las hay"
             continue; 
         }
 
+        const existingShifts = existingCheck.docs.map(doc => ({ ref: doc.ref, data: doc.data() as IShift }));
+        const hasRealEmployees = existingShifts.some(s => s.data.employeeId !== 'VACANTE');
+
+        if (hasRealEmployees) {
+            skipped++; // Regla: Seguridad (no pisar asignados)
+            continue;
+        }
+
+        // Si llegamos aquí, solo hay vacantes. Las borramos para reemplazarlas por la copia.
+        existingShifts.forEach(s => batch.delete(s.ref));
+        opCount += existingShifts.length; // Contamos borrados como operaciones
+
+        // Insertamos la copia del día origen
         for (const template of sourceShifts) {
             const tStart = this.convertToDate(template.startTime);
             const tEnd = this.convertToDate(template.endTime);
             
-            // Calculamos nueva fecha manteniendo la hora original UTC
             const newStart = new Date(d);
             newStart.setUTCHours(tStart.getUTCHours(), tStart.getUTCMinutes(), 0, 0);
             
@@ -226,7 +231,7 @@ export class SchedulingService {
                 id: newShiftRef.id,
                 objectiveId: objectiveId,
                 objectiveName: template.objectiveName,
-                employeeId: template.employeeId, // Copia el empleado o VACANTE según corresponda
+                employeeId: template.employeeId, 
                 employeeName: template.employeeName,
                 role: template.role || 'Vigilador',
                 startTime: admin.firestore.Timestamp.fromDate(newStart),
@@ -235,7 +240,7 @@ export class SchedulingService {
                 schedulerId: schedulerId,
                 updatedAt: admin.firestore.Timestamp.now()
             };
-
+            
             batch.set(newShiftRef, newShift);
             opCount++;
             if (opCount >= MAX_BATCH_SIZE) break;
