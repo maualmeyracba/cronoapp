@@ -38,34 +38,23 @@ let SchedulingService = class SchedulingService {
         if (employeeId === 'VACANTE')
             return;
         const db = this.getDb();
-        console.log(`🕵️‍♂️ Validando ausencias para ${employeeId} entre ${shiftStart.toISOString()} y ${shiftEnd.toISOString()}`);
         const absencesSnap = await db.collection(ABSENCES_COLLECTION)
             .where('employeeId', '==', employeeId)
+            .where('status', 'in', ['APPROVED', 'PENDING'])
             .get();
-        if (absencesSnap.empty) {
-            console.log("✅ No se encontraron registros de ausencia para este empleado.");
+        if (absencesSnap.empty)
             return;
-        }
         const conflict = absencesSnap.docs.find(doc => {
             const data = doc.data();
-            if (data.status === 'rejected' || data.status === 'cancelled')
-                return false;
             const absStart = this.convertToDate(data.startDate);
             const absEnd = this.convertToDate(data.endDate);
-            const shiftStartMs = shiftStart.getTime();
-            const shiftEndMs = shiftEnd.getTime();
-            const absStartMs = absStart.getTime();
-            const absEndMs = absEnd.getTime();
-            console.log(`   --> Comparando con Ausencia: ${absStart.toISOString()} - ${absEnd.toISOString()} (${data.type || 'Licencia'})`);
-            const isOverlapping = (shiftStartMs < absEndMs) && (shiftEndMs > absStartMs);
-            if (isOverlapping) {
-                console.warn(`   ⛔ CONFLICTO DETECTADO con ausencia ID: ${doc.id}`);
-            }
-            return isOverlapping;
+            return (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime());
         });
         if (conflict) {
             const data = conflict.data();
-            throw new functions.https.HttpsError('failed-precondition', `⛔ BLOQUEO: El empleado está de licencia/ausente (${data.type || 'Motivo no especificado'}) en esas fechas.`);
+            const type = data.type === 'SICK_LEAVE' ? 'LICENCIA MÉDICA' :
+                data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
+            throw new functions.https.HttpsError('failed-precondition', `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`);
         }
     }
     async assignShift(shiftData, userAuth) {
@@ -85,24 +74,31 @@ let SchedulingService = class SchedulingService {
         }
         const employeeId = shiftData.employeeId;
         if (newStart.getTime() >= newEnd.getTime())
-            throw new common_1.BadRequestException('Horario inválido (Inicio >= Fin).');
+            throw new common_1.BadRequestException('Horario inválido.');
+        await this.checkAbsenceConflict(employeeId, newStart, newEnd);
+        let isOvertime = false;
         if (employeeId !== 'VACANTE') {
             try {
                 await this.workloadService.validateAssignment(employeeId, newStart, newEnd);
             }
             catch (error) {
-                console.warn(`⛔ Workload Block: ${error.message}`);
-                throw new functions.https.HttpsError('resource-exhausted', error.message || 'El empleado excede el límite de horas.');
+                if (error.message && (error.message.includes('LÍMITE EXCEDIDO') || error.code === 'resource-exhausted')) {
+                    if (!shiftData.authorizeOvertime) {
+                        throw new functions.https.HttpsError('resource-exhausted', error.message);
+                    }
+                    isOvertime = true;
+                }
+                else {
+                    throw error;
+                }
             }
         }
-        await this.checkAbsenceConflict(employeeId, newStart, newEnd);
         try {
             await dbInstance.runTransaction(async (transaction) => {
                 if (employeeId !== 'VACANTE') {
                     const overlappingQuery = dbInstance.collection(SHIFTS_COLLECTION)
                         .where('employeeId', '==', employeeId)
                         .where('endTime', '>', newStart)
-                        .orderBy('endTime')
                         .limit(5);
                     const snapshot = await transaction.get(overlappingQuery);
                     const hasOverlap = snapshot.docs.some(doc => {
@@ -113,9 +109,8 @@ let SchedulingService = class SchedulingService {
                         const existEnd = this.convertToDate(data.endTime);
                         return this.overlapService.isOverlap(existStart, existEnd, newStart, newEnd);
                     });
-                    if (hasOverlap) {
-                        throw new functions.https.HttpsError('already-exists', '⛔ El empleado ya tiene OTRO TURNO asignado que se superpone con este horario.');
-                    }
+                    if (hasOverlap)
+                        throw new functions.https.HttpsError('already-exists', '⛔ El empleado ya tiene OTRO TURNO asignado en este horario.');
                 }
                 const finalShift = {
                     id: newShiftRef.id,
@@ -128,7 +123,8 @@ let SchedulingService = class SchedulingService {
                     status: 'Assigned',
                     schedulerId: userAuth.uid,
                     updatedAt: admin.firestore.Timestamp.now(),
-                    role: shiftData.role || 'Vigilador'
+                    role: shiftData.role || 'Vigilador',
+                    isOvertime
                 };
                 transaction.set(newShiftRef, finalShift);
             });
@@ -137,7 +133,7 @@ let SchedulingService = class SchedulingService {
         catch (error) {
             if (error instanceof functions.https.HttpsError)
                 throw error;
-            throw new functions.https.HttpsError('internal', error.message || 'Error interno al asignar turno.');
+            throw new functions.https.HttpsError('internal', error.message);
         }
     }
     async updateShift(shiftId, updateData) {
@@ -151,47 +147,37 @@ let SchedulingService = class SchedulingService {
         const effectiveStart = updateData.startTime ? this.convertToDate(updateData.startTime) : this.convertToDate(currentShift.startTime);
         const effectiveEnd = updateData.endTime ? this.convertToDate(updateData.endTime) : this.convertToDate(currentShift.endTime);
         const isRealEmployee = effectiveEmployeeId !== 'VACANTE';
-        const datesChanged = (updateData.startTime || updateData.endTime);
-        const employeeChanged = (updateData.employeeId && updateData.employeeId !== currentShift.employeeId);
-        if (isRealEmployee && (datesChanged || employeeChanged)) {
-            console.log(`🔄 Validando actualización para ${effectiveEmployeeId}...`);
+        const hasChanged = updateData.employeeId !== undefined || updateData.startTime !== undefined || updateData.endTime !== undefined;
+        let isOvertime = currentShift.isOvertime || false;
+        if (isRealEmployee && hasChanged) {
+            await this.checkAbsenceConflict(effectiveEmployeeId, effectiveStart, effectiveEnd);
             try {
                 await this.workloadService.validateAssignment(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
+                if (!updateData.authorizeOvertime)
+                    isOvertime = false;
             }
             catch (e) {
-                throw new functions.https.HttpsError('resource-exhausted', `⛔ Límite de Horas: ${e.message}`);
-            }
-            await this.checkAbsenceConflict(effectiveEmployeeId, effectiveStart, effectiveEnd);
-            const overlap = await this.checkOverlapSimple(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
-            if (overlap) {
-                throw new functions.https.HttpsError('already-exists', '⛔ Solapamiento: El empleado ya trabaja en ese horario en otro lugar.');
+                if (e.message && e.message.includes('LÍMITE EXCEDIDO')) {
+                    if (!updateData.authorizeOvertime) {
+                        throw new functions.https.HttpsError('resource-exhausted', e.message);
+                    }
+                    isOvertime = true;
+                }
+                else {
+                    throw e;
+                }
             }
         }
         const safeUpdate = { ...updateData };
         delete safeUpdate.id;
+        delete safeUpdate.authorizeOvertime;
         if (safeUpdate.startTime)
             safeUpdate.startTime = admin.firestore.Timestamp.fromDate(effectiveStart);
         if (safeUpdate.endTime)
             safeUpdate.endTime = admin.firestore.Timestamp.fromDate(effectiveEnd);
         safeUpdate.updatedAt = admin.firestore.Timestamp.now();
+        safeUpdate.isOvertime = isOvertime;
         await shiftRef.update(safeUpdate);
-    }
-    async checkOverlapSimple(employeeId, start, end, excludeShiftId) {
-        const db = this.getDb();
-        const snapshot = await db.collection(SHIFTS_COLLECTION)
-            .where('employeeId', '==', employeeId)
-            .where('endTime', '>', start)
-            .get();
-        return snapshot.docs.some(doc => {
-            if (doc.id === excludeShiftId)
-                return false;
-            const data = doc.data();
-            if (data.status === 'Canceled')
-                return false;
-            const s = this.convertToDate(data.startTime);
-            const e = this.convertToDate(data.endTime);
-            return this.overlapService.isOverlap(s, e, start, end);
-        });
     }
     async deleteShift(shiftId) {
         const db = this.getDb();

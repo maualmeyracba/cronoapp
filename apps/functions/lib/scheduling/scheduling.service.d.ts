@@ -9,9 +9,12 @@ export declare class SchedulingService {
     constructor(overlapService: ShiftOverlapService, workloadService: WorkloadService);
     private convertToDate;
     private checkAbsenceConflict;
-    assignShift(shiftData: Partial<IShift>, userAuth: admin.auth.DecodedIdToken): Promise<IShift>;
-    updateShift(shiftId: string, updateData: Partial<IShift>): Promise<void>;
-    private checkOverlapSimple;
+    assignShift(shiftData: Partial<IShift> & {
+        authorizeOvertime?: boolean;
+    }, userAuth: admin.auth.DecodedIdToken): Promise<IShift>;
+    updateShift(shiftId: string, updateData: Partial<IShift> & {
+        authorizeOvertime?: boolean;
+    }): Promise<void>;
     deleteShift(shiftId: string): Promise<void>;
     replicateDailyStructure(objectiveId: string, sourceDateStr: string, targetStartDateStr: string, targetEndDateStr: string, schedulerId: string, targetDays?: number[]): Promise<{
         created: number;

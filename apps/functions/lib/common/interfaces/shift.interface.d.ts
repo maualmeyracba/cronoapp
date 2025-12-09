@@ -13,4 +13,5 @@ export interface IShift {
     schedulerId: string;
     updatedAt: admin.firestore.Timestamp;
     role?: string;
+    isOvertime?: boolean;
 }
