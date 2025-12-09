@@ -12,12 +12,11 @@ export class PatternService {
   
   private getDb = () => admin.app().firestore();
 
-  // --- 1. GESTIÓN DE REGLAS (UPSERT) ---
+  // --- 1. GESTIÓN DE REGLAS ---
 
   async createPattern(payload: IPatternPayload, userId: string): Promise<IServicePattern> {
     const db = this.getDb();
     
-    // Validamos si ya existe
     const existingSnap = await db.collection(PATTERNS_COLLECTION)
         .where('contractId', '==', payload.contractId)
         .where('shiftTypeId', '==', payload.shiftTypeId)
@@ -69,18 +68,17 @@ export class PatternService {
       await this.getDb().collection(PATTERNS_COLLECTION).doc(id).delete();
   }
 
-  // --- 2. EL GENERADOR (CORREGIDO HUSO HORARIO) ---
+  // --- 2. EL GENERADOR (CORREGIDO HUSO HORARIO ARGENTINA) ---
 
   async generateVacancies(contractId: string, month: number, year: number, objectiveId: string): Promise<{ created: number, message: string }> {
     const db = this.getDb();
     const patterns = await this.getPatternsByContract(contractId);
-    if (patterns.length === 0) return { created: 0, message: 'No hay patrones definidos. Usa "+ Regla Base".' };
+    if (patterns.length === 0) return { created: 0, message: 'No hay patrones definidos.' };
 
     const shiftTypesMap = new Map<string, IShiftType>();
     const typesSnapshot = await db.collection(SHIFT_TYPES_COLLECTION).where('contractId', '==', contractId).get();
     typesSnapshot.forEach(doc => shiftTypesMap.set(doc.id, { id: doc.id, ...doc.data() } as IShiftType));
 
-    // Definimos rango del mes. Usamos UTC puro para iterar días sin problemas de cambio de hora.
     const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
     const endOfMonth = new Date(Date.UTC(year, month, 0, 12, 0, 0)); 
     
@@ -90,7 +88,7 @@ export class PatternService {
 
     for (let d = new Date(startOfMonth); d <= endOfMonth; d.setDate(d.getDate() + 1)) {
         const currentDayOfWeek = d.getUTCDay();
-        const dateStr = d.toISOString().split('T')[0]; // "2025-12-09"
+        const dateStr = d.toISOString().split('T')[0]; 
 
         for (const pattern of patterns) {
             const pStart = pattern.validFrom.toDate().toISOString().split('T')[0];
@@ -108,13 +106,12 @@ export class PatternService {
                 for (let i = 0; i < pattern.quantityPerDay; i++) {
                     const newShiftRef = db.collection(SHIFTS_COLLECTION).doc();
 
-                    // 🛑 FIX ZONA HORARIA: ARGENTINA (GMT-3)
-                    // En lugar de 'Z' (UTC), usamos '-03:00'.
-                    // Esto le dice a Firestore: "Esta hora es local de Argentina, guárdala como tal".
+                    // 🛑 FIX: Forzamos Zona Horaria -03:00 (Argentina)
+                    // Esto hace que "06:00" en el string se guarde como 09:00 UTC,
+                    // que al leerse en el navegador (Argentina) volverá a ser 06:00.
                     const startISO = `${dateStr}T${shiftType.startTime}:00-03:00`;
                     const startObj = new Date(startISO);
                     
-                    // Calculamos fin sumando horas a la fecha ya parseada
                     const endObj = new Date(startObj.getTime() + (shiftType.durationHours * 60 * 60 * 1000));
 
                     const vacancy = {
@@ -122,7 +119,7 @@ export class PatternService {
                         employeeId: 'VACANTE', 
                         employeeName: 'VACANTE',
                         objectiveId: objectiveId,
-                        objectiveName: 'Sede', // Idealmente buscar nombre real del objetivo
+                        objectiveName: 'Sede', 
                         startTime: admin.firestore.Timestamp.fromDate(startObj),
                         endTime: admin.firestore.Timestamp.fromDate(endObj),
                         status: 'Assigned', 
@@ -151,7 +148,6 @@ export class PatternService {
   // --- 3. LIMPIEZA DE ESTRUCTURA ---
   async clearVacancies(objectiveId: string, month: number, year: number): Promise<{ deleted: number }> {
       const db = this.getDb();
-      // Rango amplio para cubrir todo el mes en cualquier TZ
       const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
       const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59));
       

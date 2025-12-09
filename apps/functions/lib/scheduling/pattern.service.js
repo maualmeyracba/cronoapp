@@ -68,7 +68,7 @@ let PatternService = class PatternService {
         const db = this.getDb();
         const patterns = await this.getPatternsByContract(contractId);
         if (patterns.length === 0)
-            return { created: 0, message: 'No hay patrones definidos. Usa "+ Regla Base".' };
+            return { created: 0, message: 'No hay patrones definidos.' };
         const shiftTypesMap = new Map();
         const typesSnapshot = await db.collection(SHIFT_TYPES_COLLECTION).where('contractId', '==', contractId).get();
         typesSnapshot.forEach(doc => shiftTypesMap.set(doc.id, { id: doc.id, ...doc.data() }));
