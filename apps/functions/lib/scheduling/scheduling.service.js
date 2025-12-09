@@ -60,32 +60,79 @@ let SchedulingService = class SchedulingService {
                 throw new functions.https.HttpsError('failed-precondition', businessRuleError.message);
             }
         }
-        const finalShift = {
-            id: newShiftRef.id,
-            employeeId,
-            objectiveId: shiftData.objectiveId,
-            employeeName: shiftData.employeeName || 'S/D',
-            objectiveName: shiftData.objectiveName || 'S/D',
-            startTime: admin.firestore.Timestamp.fromDate(newStart),
-            endTime: admin.firestore.Timestamp.fromDate(newEnd),
-            status: 'Assigned',
-            schedulerId: userAuth.uid,
-            updatedAt: admin.firestore.Timestamp.now(),
-            role: shiftData.role || 'Vigilador'
-        };
-        await newShiftRef.set(finalShift);
-        return finalShift;
+        try {
+            await dbInstance.runTransaction(async (transaction) => {
+                if (employeeId !== 'VACANTE') {
+                    const overlappingQuery = dbInstance.collection(SHIFTS_COLLECTION)
+                        .where('employeeId', '==', employeeId)
+                        .where('endTime', '>', newStart)
+                        .limit(10);
+                    const snapshot = await transaction.get(overlappingQuery);
+                    const hasOverlap = snapshot.docs.some(doc => {
+                        const data = doc.data();
+                        if (data.status === 'Canceled')
+                            return false;
+                        const existStart = this.convertToDate(data.startTime);
+                        const existEnd = this.convertToDate(data.endTime);
+                        return this.overlapService.isOverlap(existStart, existEnd, newStart, newEnd);
+                    });
+                    if (hasOverlap)
+                        throw new functions.https.HttpsError('already-exists', 'Solapamiento detectado en transacción.');
+                }
+                const finalShift = {
+                    id: newShiftRef.id,
+                    employeeId,
+                    objectiveId: shiftData.objectiveId,
+                    employeeName: shiftData.employeeName || 'S/D',
+                    objectiveName: shiftData.objectiveName || 'S/D',
+                    startTime: admin.firestore.Timestamp.fromDate(newStart),
+                    endTime: admin.firestore.Timestamp.fromDate(newEnd),
+                    status: 'Assigned',
+                    schedulerId: userAuth.uid,
+                    updatedAt: admin.firestore.Timestamp.now(),
+                    role: shiftData.role || 'Vigilador'
+                };
+                transaction.set(newShiftRef, finalShift);
+                return finalShift.id;
+            });
+            return { id: newShiftRef.id, ...shiftData };
+        }
+        catch (error) {
+            if (error instanceof functions.https.HttpsError)
+                throw error;
+            const msg = error.message || 'Error desconocido';
+            if (msg.includes('LÍMITE') || msg.includes('BLOQUEO') || msg.includes('SOLAPAMIENTO')) {
+                throw new functions.https.HttpsError('failed-precondition', msg);
+            }
+            throw new functions.https.HttpsError('internal', msg);
+        }
     }
     async updateShift(shiftId, updateData) {
         const db = this.getDb();
         const shiftRef = db.collection(SHIFTS_COLLECTION).doc(shiftId);
+        const currentDoc = await shiftRef.get();
+        if (!currentDoc.exists)
+            throw new functions.https.HttpsError('not-found', 'Turno no encontrado');
+        const currentShift = currentDoc.data();
+        const effectiveEmployeeId = updateData.employeeId || currentShift.employeeId;
+        const effectiveStart = updateData.startTime ? this.convertToDate(updateData.startTime) : this.convertToDate(currentShift.startTime);
+        const effectiveEnd = updateData.endTime ? this.convertToDate(updateData.endTime) : this.convertToDate(currentShift.endTime);
+        const isRealEmployee = effectiveEmployeeId !== 'VACANTE';
+        const hasChanged = updateData.employeeId !== undefined || updateData.startTime !== undefined || updateData.endTime !== undefined;
+        if (isRealEmployee && hasChanged) {
+            try {
+                await this.workloadService.validateAssignment(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
+            }
+            catch (e) {
+                throw new functions.https.HttpsError('failed-precondition', e.message);
+            }
+        }
         const safeUpdate = { ...updateData };
         delete safeUpdate.id;
-        delete safeUpdate.employeeId;
         if (safeUpdate.startTime)
-            safeUpdate.startTime = admin.firestore.Timestamp.fromDate(this.convertToDate(safeUpdate.startTime));
+            safeUpdate.startTime = admin.firestore.Timestamp.fromDate(effectiveStart);
         if (safeUpdate.endTime)
-            safeUpdate.endTime = admin.firestore.Timestamp.fromDate(this.convertToDate(safeUpdate.endTime));
+            safeUpdate.endTime = admin.firestore.Timestamp.fromDate(effectiveEnd);
         safeUpdate.updatedAt = admin.firestore.Timestamp.now();
         await shiftRef.update(safeUpdate);
     }
@@ -95,11 +142,11 @@ let SchedulingService = class SchedulingService {
     }
     async replicateDailyStructure(objectiveId, sourceDateStr, targetStartDateStr, targetEndDateStr, schedulerId) {
         const db = this.getDb();
-        const sourceDate = new Date(sourceDateStr + 'T12:00:00');
+        const sourceDate = new Date(sourceDateStr + 'T12:00:00Z');
         const startSource = new Date(sourceDate);
-        startSource.setHours(0, 0, 0, 0);
+        startSource.setUTCHours(0, 0, 0, 0);
         const endSource = new Date(sourceDate);
-        endSource.setHours(23, 59, 59, 999);
+        endSource.setUTCHours(23, 59, 59, 999);
         const sourceShiftsSnap = await db.collection(SHIFTS_COLLECTION)
             .where('objectiveId', '==', objectiveId)
             .where('startTime', '>=', admin.firestore.Timestamp.fromDate(startSource))
@@ -113,13 +160,13 @@ let SchedulingService = class SchedulingService {
         let opCount = 0;
         let skipped = 0;
         const MAX_BATCH_SIZE = 450;
-        const startTarget = new Date(targetStartDateStr + 'T12:00:00');
-        const endTarget = new Date(targetEndDateStr + 'T12:00:00');
+        const startTarget = new Date(targetStartDateStr + 'T12:00:00Z');
+        const endTarget = new Date(targetEndDateStr + 'T12:00:00Z');
         for (let d = new Date(startTarget); d <= endTarget; d.setDate(d.getDate() + 1)) {
             const dayStart = new Date(d);
-            dayStart.setHours(0, 0, 0, 0);
+            dayStart.setUTCHours(0, 0, 0, 0);
             const dayEnd = new Date(d);
-            dayEnd.setHours(23, 59, 59, 999);
+            dayEnd.setUTCHours(23, 59, 59, 999);
             const existingCheck = await db.collection(SHIFTS_COLLECTION)
                 .where('objectiveId', '==', objectiveId)
                 .where('startTime', '>=', admin.firestore.Timestamp.fromDate(dayStart))
@@ -134,7 +181,7 @@ let SchedulingService = class SchedulingService {
                 const tStart = this.convertToDate(template.startTime);
                 const tEnd = this.convertToDate(template.endTime);
                 const newStart = new Date(d);
-                newStart.setHours(tStart.getHours(), tStart.getMinutes(), 0, 0);
+                newStart.setUTCHours(tStart.getUTCHours(), tStart.getUTCMinutes(), 0, 0);
                 const durationMs = tEnd.getTime() - tStart.getTime();
                 const newEnd = new Date(newStart.getTime() + durationMs);
                 const newShiftRef = db.collection(SHIFTS_COLLECTION).doc();
@@ -149,9 +196,7 @@ let SchedulingService = class SchedulingService {
                     endTime: admin.firestore.Timestamp.fromDate(newEnd),
                     status: 'Assigned',
                     schedulerId: schedulerId,
-                    updatedAt: admin.firestore.Timestamp.now(),
-                    checkInTime: undefined,
-                    checkOutTime: undefined
+                    updatedAt: admin.firestore.Timestamp.now()
                 };
                 batch.set(newShiftRef, newShift);
                 opCount++;

@@ -1,14 +1,13 @@
-// apps/functions/src/app.module.ts
 import { Module } from '@nestjs/common';
 import { AuthModule } from './auth/auth.module';
 import { SchedulingModule } from './scheduling/scheduling.module';
-import { DataManagementModule } from './data-management/data-management.module'; // Importar nuevo módulo
+import { DataManagementModule } from './data-management/data-management.module';
 
 @Module({
   imports: [
     AuthModule,
-    SchedulingModule,
-    DataManagementModule, // Incluir el módulo de gestión de datos
+    SchedulingModule, // Este módulo ahora exporta PatternService correctamente
+    DataManagementModule,
   ],
   controllers: [],
   providers: [],

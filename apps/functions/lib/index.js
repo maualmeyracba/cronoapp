@@ -294,13 +294,17 @@ exports.managePatterns = functions.https.onCall(async (data, context) => {
     try {
         const patternService = await getService(pattern_service_1.PatternService);
         switch (action) {
-            case 'CREATE_PATTERN': return patternService.createPattern(payload, callerAuth.uid);
-            case 'GET_PATTERNS': return patternService.getPatternsByContract(payload.contractId);
+            case 'CREATE_PATTERN':
+                return patternService.createPattern(payload, callerAuth.uid);
+            case 'GET_PATTERNS':
+                return patternService.getPatternsByContract(payload.contractId);
             case 'DELETE_PATTERN':
                 await patternService.deletePattern(payload.id);
                 return { success: true };
             case 'GENERATE_VACANCIES':
                 return patternService.generateVacancies(payload.contractId, payload.month, payload.year, payload.objectiveId);
+            case 'CLEAR_VACANCIES':
+                return patternService.clearVacancies(payload.objectiveId, payload.month, payload.year);
             default: throw new functions.https.HttpsError('invalid-argument', 'Acción inválida');
         }
     }

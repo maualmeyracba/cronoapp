@@ -18,11 +18,15 @@ let PatternService = class PatternService {
     }
     async createPattern(payload, userId) {
         const db = this.getDb();
-        const ref = db.collection(PATTERNS_COLLECTION).doc();
+        const existingSnap = await db.collection(PATTERNS_COLLECTION)
+            .where('contractId', '==', payload.contractId)
+            .where('shiftTypeId', '==', payload.shiftTypeId)
+            .where('active', '==', true)
+            .limit(1)
+            .get();
         const validFrom = admin.firestore.Timestamp.fromDate(new Date(payload.validFrom));
-        const validTo = payload.validTo ? admin.firestore.Timestamp.fromDate(new Date(payload.validTo)) : undefined;
-        const newPattern = {
-            id: ref.id,
+        const validTo = payload.validTo ? admin.firestore.Timestamp.fromDate(new Date(payload.validTo)) : null;
+        const patternData = {
             contractId: payload.contractId,
             shiftTypeId: payload.shiftTypeId,
             daysOfWeek: payload.daysOfWeek,
@@ -30,11 +34,25 @@ let PatternService = class PatternService {
             validFrom,
             validTo,
             active: true,
-            createdAt: admin.firestore.Timestamp.now(),
-            createdBy: userId
+            updatedAt: admin.firestore.Timestamp.now(),
+            updatedBy: userId
         };
-        await ref.set(newPattern);
-        return newPattern;
+        if (!existingSnap.empty) {
+            const docId = existingSnap.docs[0].id;
+            await db.collection(PATTERNS_COLLECTION).doc(docId).update(patternData);
+            return { id: docId, ...patternData };
+        }
+        else {
+            const ref = db.collection(PATTERNS_COLLECTION).doc();
+            const newPattern = {
+                ...patternData,
+                id: ref.id,
+                createdAt: admin.firestore.Timestamp.now(),
+                createdBy: userId
+            };
+            await ref.set(newPattern);
+            return newPattern;
+        }
     }
     async getPatternsByContract(contractId) {
         const snapshot = await this.getDb().collection(PATTERNS_COLLECTION)
@@ -50,30 +68,25 @@ let PatternService = class PatternService {
         const db = this.getDb();
         const patterns = await this.getPatternsByContract(contractId);
         if (patterns.length === 0)
-            return { created: 0, message: 'No hay patrones definidos para este servicio.' };
+            return { created: 0, message: 'No hay patrones definidos. Usa "+ Regla Base".' };
         const shiftTypesMap = new Map();
         const typesSnapshot = await db.collection(SHIFT_TYPES_COLLECTION).where('contractId', '==', contractId).get();
-        typesSnapshot.forEach(doc => {
-            shiftTypesMap.set(doc.id, { id: doc.id, ...doc.data() });
-        });
-        const startOfMonth = new Date(year, month - 1, 1);
-        const endOfMonth = new Date(year, month, 0);
+        typesSnapshot.forEach(doc => shiftTypesMap.set(doc.id, { id: doc.id, ...doc.data() }));
+        const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+        const endOfMonth = new Date(Date.UTC(year, month, 0, 12, 0, 0));
         const batch = db.batch();
         let count = 0;
         const MAX_BATCH_SIZE = 450;
         for (let d = new Date(startOfMonth); d <= endOfMonth; d.setDate(d.getDate() + 1)) {
-            const currentDayOfWeek = d.getDay();
+            const currentDayOfWeek = d.getUTCDay();
+            const dateStr = d.toISOString().split('T')[0];
             for (const pattern of patterns) {
-                const pStart = pattern.validFrom.toDate();
-                pStart.setHours(0, 0, 0, 0);
-                const checkDate = new Date(d);
-                checkDate.setHours(0, 0, 0, 0);
-                if (checkDate < pStart)
+                const pStart = pattern.validFrom.toDate().toISOString().split('T')[0];
+                if (dateStr < pStart)
                     continue;
                 if (pattern.validTo) {
-                    const pEnd = pattern.validTo.toDate();
-                    pEnd.setHours(23, 59, 59, 999);
-                    if (checkDate > pEnd)
+                    const pEnd = pattern.validTo.toDate().toISOString().split('T')[0];
+                    if (dateStr > pEnd)
                         continue;
                 }
                 if (pattern.daysOfWeek.includes(currentDayOfWeek)) {
@@ -82,19 +95,17 @@ let PatternService = class PatternService {
                         continue;
                     for (let i = 0; i < pattern.quantityPerDay; i++) {
                         const newShiftRef = db.collection(SHIFTS_COLLECTION).doc();
-                        const [h, m] = shiftType.startTime.split(':').map(Number);
-                        const start = new Date(d);
-                        start.setHours(h, m, 0, 0);
-                        const end = new Date(start);
-                        end.setHours(start.getHours() + shiftType.durationHours);
+                        const startISO = `${dateStr}T${shiftType.startTime}:00-03:00`;
+                        const startObj = new Date(startISO);
+                        const endObj = new Date(startObj.getTime() + (shiftType.durationHours * 60 * 60 * 1000));
                         const vacancy = {
                             id: newShiftRef.id,
                             employeeId: 'VACANTE',
                             employeeName: 'VACANTE',
                             objectiveId: objectiveId,
                             objectiveName: 'Sede',
-                            startTime: admin.firestore.Timestamp.fromDate(start),
-                            endTime: admin.firestore.Timestamp.fromDate(end),
+                            startTime: admin.firestore.Timestamp.fromDate(startObj),
+                            endTime: admin.firestore.Timestamp.fromDate(endObj),
                             status: 'Assigned',
                             shiftTypeId: shiftType.id,
                             role: shiftType.requiredRole || 'Vigilador',
@@ -111,15 +122,33 @@ let PatternService = class PatternService {
             if (count >= MAX_BATCH_SIZE)
                 break;
         }
-        if (count > 0) {
+        if (count > 0)
             await batch.commit();
-        }
         return {
             created: count,
-            message: count >= MAX_BATCH_SIZE
-                ? `Límite de lote alcanzado. Se generaron ${count} vacantes.`
-                : `¡Éxito! Se generaron ${count} turnos vacantes.`
+            message: count >= MAX_BATCH_SIZE ? `Límite de lote. ${count} vacantes.` : `¡Éxito! ${count} vacantes generadas.`
         };
+    }
+    async clearVacancies(objectiveId, month, year) {
+        const db = this.getDb();
+        const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+        const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59));
+        const snapshot = await db.collection(SHIFTS_COLLECTION)
+            .where('objectiveId', '==', objectiveId)
+            .where('employeeId', '==', 'VACANTE')
+            .where('startTime', '>=', admin.firestore.Timestamp.fromDate(startOfMonth))
+            .where('startTime', '<=', admin.firestore.Timestamp.fromDate(endOfMonth))
+            .get();
+        if (snapshot.empty)
+            return { deleted: 0 };
+        const batch = db.batch();
+        let count = 0;
+        snapshot.docs.forEach(doc => {
+            batch.delete(doc.ref);
+            count++;
+        });
+        await batch.commit();
+        return { deleted: count };
     }
 };
 exports.PatternService = PatternService;

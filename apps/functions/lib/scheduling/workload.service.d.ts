@@ -1,8 +1,8 @@
 import { IShift } from '../common/interfaces/shift.interface';
 export declare class WorkloadService {
     private getDb;
-    validateAssignment(employeeId: string, shiftStart: Date, shiftEnd: Date): Promise<void>;
-    checkShiftOverlap(employeeId: string, start: Date, end: Date): Promise<IShift[]>;
+    validateAssignment(employeeId: string, shiftStart: Date, shiftEnd: Date, excludeShiftId?: string): Promise<void>;
+    checkShiftOverlap(employeeId: string, start: Date, end: Date, excludeShiftId?: string): Promise<IShift[]>;
     private checkAvailability;
     private checkMonthlyLimit;
 }

@@ -1,5 +1,5 @@
 AUDITORÍA DE PROYECTO CONTROL DATA
-Fecha: 2025-12-08T20:17:45.577Z
+Fecha: 2025-12-09T15:58:30.020Z
 ----------------------------------------
 
 
@@ -97,17 +97,16 @@ FILE: apps\functions\package.json
 ================================================================================
 FILE: apps\functions\src\app.module.ts
 ================================================================================
-// apps/functions/src/app.module.ts
 import { Module } from '@nestjs/common';
 import { AuthModule } from './auth/auth.module';
 import { SchedulingModule } from './scheduling/scheduling.module';
-import { DataManagementModule } from './data-management/data-management.module'; // Importar nuevo módulo
+import { DataManagementModule } from './data-management/data-management.module';
 
 @Module({
   imports: [
     AuthModule,
-    SchedulingModule,
-    DataManagementModule, // Incluir el módulo de gestión de datos
+    SchedulingModule, // Este módulo ahora exporta PatternService correctamente
+    DataManagementModule,
   ],
   controllers: [],
   providers: [],
@@ -1273,7 +1272,7 @@ export const createUser = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 2. MOTOR DE AGENDAMIENTO (CREAR TURNOS)
+// 2. MOTOR DE AGENDAMIENTO (CREAR TURNOS INDIVIDUALES)
 // =========================================================
 export const scheduleShift = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1294,11 +1293,14 @@ export const scheduleShift = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 10. GESTIÓN DE TURNOS (EDITAR / ELIMINAR)
+// 3. GESTIÓN DE TURNOS (EDITAR / ELIMINAR / REPLICAR)
 // =========================================================
 export const manageShifts = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
-  if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+  // Permitimos roles de planificación
+  const ALLOWED_PLANNING_ROLES = ['admin', 'SuperAdmin', 'Manager', 'Scheduler'];
+
+  if (!callerAuth || !ALLOWED_PLANNING_ROLES.includes(callerAuth.token.role as string)) {
     throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
   }
 
@@ -1316,6 +1318,24 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
         await schedulingService.deleteShift(payload.id);
         return { success: true, message: 'Turno eliminado.' };
       
+      // 🛑 REPLICACIÓN MASIVA (Clonar estructura)
+      case 'REPLICATE_STRUCTURE':
+        if (!payload.objectiveId || !payload.sourceDate || !payload.targetStartDate || !payload.targetEndDate) {
+            throw new functions.https.HttpsError('invalid-argument', 'Faltan fechas para replicar.');
+        }
+        const result = await schedulingService.replicateDailyStructure(
+            payload.objectiveId,
+            payload.sourceDate,
+            payload.targetStartDate,
+            payload.targetEndDate,
+            callerAuth.uid
+        );
+        return { 
+            success: true, 
+            data: result, 
+            message: `Replicado: ${result.created} turnos. (Omitidos: ${result.skipped} días)` 
+        };
+
       default:
         throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
@@ -1328,18 +1348,16 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 3. AUDITORÍA (GEOFENCING & MANUAL OVERRIDE)
+// 4. AUDITORÍA (GEOFENCING & MANUAL OVERRIDE)
 // =========================================================
 export const auditShift = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
 
-  // 🛑 LEEMOS PARAMETROS EXTRA (isManualOverride)
   const { shiftId, action, coords, isManualOverride } = data;
 
   try {
     const auditService = await getService(AuditService);
     
-    // 🛑 PASAMOS CONTEXTO DE SEGURIDAD (UID + ROL)
     const result = await auditService.auditShiftAction(
         shiftId, 
         action, 
@@ -1359,7 +1377,7 @@ export const auditShift = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 4. GESTIÓN DE DATOS BÁSICOS
+// 5. GESTIÓN DE DATOS BÁSICOS
 // =========================================================
 export const manageData = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1385,7 +1403,7 @@ export const manageData = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 5. GESTIÓN DE JERARQUÍA COMERCIAL (CLIENTES, OBJETIVOS, SERVICIOS)
+// 6. GESTIÓN DE JERARQUÍA COMERCIAL
 // =========================================================
 export const manageHierarchy = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1403,10 +1421,11 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
       case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
       case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
       case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
-      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
+      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data);
+          return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
-      
-      // Objetivos
+
+      // Objetivos (Edición/Borrado)
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
       case 'UPDATE_OBJECTIVE': 
           await clientService.updateObjective(payload.id, payload.data);
@@ -1442,7 +1461,7 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 6. GESTIÓN DE EMPLEADOS (RRHH)
+// 7. GESTIÓN DE EMPLEADOS (RRHH)
 // =========================================================
 export const manageEmployees = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1474,7 +1493,7 @@ export const manageEmployees = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 7. GESTIÓN DE USUARIOS DEL SISTEMA (ADMINS)
+// 8. GESTIÓN DE USUARIOS DEL SISTEMA (ADMINS)
 // =========================================================
 export const manageSystemUsers = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1512,7 +1531,7 @@ export const manageSystemUsers = functions.https.onCall(async (data, context) =>
 });
 
 // =========================================================
-// 8. GESTIÓN DE NOVEDADES (AUSENCIAS)
+// 9. GESTIÓN DE NOVEDADES (AUSENCIAS)
 // =========================================================
 export const manageAbsences = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1550,7 +1569,7 @@ export const manageAbsences = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 11. GESTIÓN DE PATRONES DE SERVICIO (AUTOMATIZACIÓN) [NUEVO]
+// 10. GESTIÓN DE PATRONES DE SERVICIO (AUTOMATIZACIÓN)
 // =========================================================
 export const managePatterns = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -1564,9 +1583,17 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
     const patternService = await getService(PatternService);
 
     switch(action) {
-        case 'CREATE_PATTERN': return patternService.createPattern(payload, callerAuth.uid);
-        case 'GET_PATTERNS': return patternService.getPatternsByContract(payload.contractId);
-        case 'DELETE_PATTERN': await patternService.deletePattern(payload.id); return { success: true };
+        case 'CREATE_PATTERN': 
+            return patternService.createPattern(payload, callerAuth.uid);
+        
+        case 'GET_PATTERNS': 
+            return patternService.getPatternsByContract(payload.contractId);
+        
+        case 'DELETE_PATTERN': 
+            await patternService.deletePattern(payload.id); 
+            return { success: true };
+        
+        // Generar estructura (Crear vacantes)
         case 'GENERATE_VACANCIES': 
             return patternService.generateVacancies(
                 payload.contractId, 
@@ -1574,6 +1601,15 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
                 payload.year, 
                 payload.objectiveId 
             );
+        
+        // 🛑 NUEVO: Borrar estructura (Eliminar vacantes)
+        case 'CLEAR_VACANCIES':
+            return patternService.clearVacancies(
+                payload.objectiveId,
+                payload.month,
+                payload.year
+            );
+
         default: throw new functions.https.HttpsError('invalid-argument', 'Acción inválida');
     }
   } catch (error: any) {
@@ -1583,7 +1619,7 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 9. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
+// 11. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
 // =========================================================
 export const checkSystemHealth = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
@@ -1874,18 +1910,24 @@ export class PatternService {
   
   private getDb = () => admin.app().firestore();
 
-  // --- 1. GESTIÓN DE REGLAS (ABM) ---
+  // --- 1. GESTIÓN DE REGLAS (UPSERT: CREAR O ACTUALIZAR) ---
 
   async createPattern(payload: IPatternPayload, userId: string): Promise<IServicePattern> {
     const db = this.getDb();
-    const ref = db.collection(PATTERNS_COLLECTION).doc();
     
-    // Convertimos fechas de string a Timestamp para Firestore
-    const validFrom = admin.firestore.Timestamp.fromDate(new Date(payload.validFrom));
-    const validTo = payload.validTo ? admin.firestore.Timestamp.fromDate(new Date(payload.validTo)) : undefined;
+    // 1. Buscamos si ya existe un patrón activo para este Contrato y Tipo de Turno
+    const existingSnap = await db.collection(PATTERNS_COLLECTION)
+        .where('contractId', '==', payload.contractId)
+        .where('shiftTypeId', '==', payload.shiftTypeId)
+        .where('active', '==', true)
+        .limit(1)
+        .get();
 
-    const newPattern: IServicePattern = {
-        id: ref.id,
+    // Preparar datos (Fechas en UTC puro)
+    const validFrom = admin.firestore.Timestamp.fromDate(new Date(payload.validFrom));
+    const validTo = payload.validTo ? admin.firestore.Timestamp.fromDate(new Date(payload.validTo)) : null;
+
+    const patternData = {
         contractId: payload.contractId,
         shiftTypeId: payload.shiftTypeId,
         daysOfWeek: payload.daysOfWeek,
@@ -1893,12 +1935,27 @@ export class PatternService {
         validFrom,
         validTo,
         active: true,
-        createdAt: admin.firestore.Timestamp.now(),
-        createdBy: userId
+        updatedAt: admin.firestore.Timestamp.now(),
+        updatedBy: userId
     };
 
-    await ref.set(newPattern);
-    return newPattern;
+    if (!existingSnap.empty) {
+        // 🛑 UPDATE: Si existe, actualizamos el existente (Evita duplicados)
+        const docId = existingSnap.docs[0].id;
+        await db.collection(PATTERNS_COLLECTION).doc(docId).update(patternData);
+        return { id: docId, ...patternData } as unknown as IServicePattern;
+    } else {
+        // 🛑 CREATE: Si no existe, creamos uno nuevo
+        const ref = db.collection(PATTERNS_COLLECTION).doc();
+        const newPattern = {
+            ...patternData,
+            id: ref.id,
+            createdAt: admin.firestore.Timestamp.now(),
+            createdBy: userId
+        };
+        await ref.set(newPattern);
+        return newPattern as any;
+    }
   }
 
   async getPatternsByContract(contractId: string): Promise<IServicePattern[]> {
@@ -1913,109 +1970,114 @@ export class PatternService {
       await this.getDb().collection(PATTERNS_COLLECTION).doc(id).delete();
   }
 
-  // --- 2. EL GENERADOR (LÓGICA AUTOMÁTICA) ---
+  // --- 2. EL GENERADOR (LÓGICA UTC SEGURA) ---
 
   async generateVacancies(contractId: string, month: number, year: number, objectiveId: string): Promise<{ created: number, message: string }> {
     const db = this.getDb();
     
-    // A. Buscar reglas (patrones) del contrato
     const patterns = await this.getPatternsByContract(contractId);
-    if (patterns.length === 0) return { created: 0, message: 'No hay patrones definidos para este servicio.' };
+    if (patterns.length === 0) return { created: 0, message: 'No hay patrones definidos. Usa "+ Regla Base".' };
 
-    // B. Pre-cargar Tipos de Turno (Para saber horarios y duración)
-    // Esto evita hacer una consulta por cada día
     const shiftTypesMap = new Map<string, IShiftType>();
     const typesSnapshot = await db.collection(SHIFT_TYPES_COLLECTION).where('contractId', '==', contractId).get();
-    
-    typesSnapshot.forEach(doc => {
-        shiftTypesMap.set(doc.id, { id: doc.id, ...doc.data() } as IShiftType);
-    });
+    typesSnapshot.forEach(doc => shiftTypesMap.set(doc.id, { id: doc.id, ...doc.data() } as IShiftType));
 
-    // C. Definir el rango del mes solicitado
-    // Nota: month viene 1-12, Date usa 0-11
-    const startOfMonth = new Date(year, month - 1, 1); 
-    const endOfMonth = new Date(year, month, 0); // El día 0 del siguiente mes es el último de este
+    // Definimos rango del mes en UTC (Días puros)
+    const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+    const endOfMonth = new Date(Date.UTC(year, month, 0, 12, 0, 0)); 
     
     const batch = db.batch();
     let count = 0;
-    const MAX_BATCH_SIZE = 450; // Firestore limita a 500 ops por batch
+    const MAX_BATCH_SIZE = 450; 
 
-    // D. Bucle: Recorrer día por día
+    // Recorremos día por día
     for (let d = new Date(startOfMonth); d <= endOfMonth; d.setDate(d.getDate() + 1)) {
-        const currentDayOfWeek = d.getDay(); // 0=Dom ... 6=Sab
-        
-        for (const pattern of patterns) {
-            // Validar si el patrón está vigente en esta fecha
-            const pStart = pattern.validFrom.toDate();
-            // Normalizar a medianoche para comparar solo fechas
-            pStart.setHours(0,0,0,0);
-            const checkDate = new Date(d);
-            checkDate.setHours(0,0,0,0);
+        const currentDayOfWeek = d.getUTCDay(); 
+        const dateStr = d.toISOString().split('T')[0]; // "2025-12-09"
 
-            if (checkDate < pStart) continue;
+        for (const pattern of patterns) {
+            // Validaciones de vigencia (Comparando strings YYYY-MM-DD es seguro)
+            const pStart = pattern.validFrom.toDate().toISOString().split('T')[0];
+            if (dateStr < pStart) continue;
+            
             if (pattern.validTo) {
-                const pEnd = pattern.validTo.toDate();
-                pEnd.setHours(23,59,59,999);
-                if (checkDate > pEnd) continue;
+                const pEnd = pattern.validTo.toDate().toISOString().split('T')[0];
+                if (dateStr > pEnd) continue;
             }
 
-            // Validar si toca trabajar este día de la semana
             if (pattern.daysOfWeek.includes(currentDayOfWeek)) {
-                
                 const shiftType = shiftTypesMap.get(pattern.shiftTypeId);
                 if (!shiftType) continue;
 
-                // Crear N vacantes según la dotación requerida
                 for (let i = 0; i < pattern.quantityPerDay; i++) {
                     const newShiftRef = db.collection(SHIFTS_COLLECTION).doc();
                     
-                    // Calcular Horario Real (Fecha del bucle + Hora del Tipo)
-                    // shiftType.startTime es "07:00"
-                    const [h, m] = shiftType.startTime.split(':').map(Number);
+                    // 🛑 FIX HORARIO: Construcción manual de la fecha ISO UTC
+                    // Concatenamos "T" + Hora + "Z" para forzar UTC Zero Offset.
+                    // Ej: "2025-12-09" + "T" + "06:00" + ":00Z" = "2025-12-09T06:00:00Z"
+                    const startISO = `${dateStr}T${shiftType.startTime}:00Z`;
+                    const startUTC = new Date(startISO);
                     
-                    const start = new Date(d);
-                    start.setHours(h, m, 0, 0);
-                    
-                    const end = new Date(start);
-                    end.setHours(start.getHours() + shiftType.durationHours);
+                    // Calculamos fin sumando milisegundos
+                    const endUTC = new Date(startUTC.getTime() + (shiftType.durationHours * 60 * 60 * 1000));
 
-                    // E. Crear el Objeto Turno (Vacante)
                     const vacancy = {
                         id: newShiftRef.id,
-                        employeeId: 'VACANTE', // 🛑 FLAG: Esto le dice al frontend que es gris
+                        employeeId: 'VACANTE', 
                         employeeName: 'VACANTE',
                         objectiveId: objectiveId,
-                        objectiveName: 'Sede', // Idealmente buscar nombre real, pero Sede sirve
-                        startTime: admin.firestore.Timestamp.fromDate(start),
-                        endTime: admin.firestore.Timestamp.fromDate(end),
-                        status: 'Assigned', // Estado válido
+                        objectiveName: 'Sede', 
+                        startTime: admin.firestore.Timestamp.fromDate(startUTC),
+                        endTime: admin.firestore.Timestamp.fromDate(endUTC),
+                        status: 'Assigned', 
                         shiftTypeId: shiftType.id,
                         role: shiftType.requiredRole || 'Vigilador',
                         schedulerId: 'SYSTEM_GENERATOR',
                         updatedAt: admin.firestore.Timestamp.now()
                     };
-
                     batch.set(newShiftRef, vacancy);
                     count++;
-
-                    // Protección simple contra límite de Batch
-                    if (count >= MAX_BATCH_SIZE) break; 
+                    if (count >= MAX_BATCH_SIZE) break;
                 }
             }
         }
         if (count >= MAX_BATCH_SIZE) break;
     }
 
-    if (count > 0) {
-        await batch.commit();
-    }
+    if (count > 0) await batch.commit();
 
     return { 
         created: count, 
-        message: count >= MAX_BATCH_SIZE 
-            ? `Límite de lote alcanzado. Se generaron ${count} vacantes.` 
-            : `¡Éxito! Se generaron ${count} turnos vacantes.` 
+        message: count >= MAX_BATCH_SIZE ? `Límite de lote. ${count} vacantes.` : `¡Éxito! ${count} vacantes generadas.` 
     };
+  }
+
+  // --- 3. LIMPIEZA DE ESTRUCTURA ---
+  async clearVacancies(objectiveId: string, month: number, year: number): Promise<{ deleted: number }> {
+      const db = this.getDb();
+      
+      const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+      const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59));
+
+      const snapshot = await db.collection(SHIFTS_COLLECTION)
+          .where('objectiveId', '==', objectiveId)
+          .where('employeeId', '==', 'VACANTE')
+          .where('startTime', '>=', admin.firestore.Timestamp.fromDate(startOfMonth))
+          .where('startTime', '<=', admin.firestore.Timestamp.fromDate(endOfMonth))
+          .get();
+
+      if (snapshot.empty) return { deleted: 0 };
+
+      const batch = db.batch();
+      let count = 0;
+      
+      snapshot.docs.forEach(doc => {
+          batch.delete(doc.ref);
+          count++;
+      });
+
+      await batch.commit();
+      return { deleted: count };
   }
 }
 
@@ -2028,25 +2090,29 @@ import { ShiftOverlapService } from './shift-overlap.service';
 import { WorkloadService } from './workload.service';
 import { AuditService } from './audit.service';
 import { GeofencingService } from './geofencing.service';
-// Importamos el módulo de datos
+// 1. Importar PatternService
+import { PatternService } from './pattern.service'; 
 import { DataManagementModule } from '../data-management/data-management.module';
 
 @Module({
   imports: [
-    // 🛑 FIX: Usamos forwardRef para romper el ciclo con DataManagement
     forwardRef(() => DataManagementModule)
   ],
   providers: [
     SchedulingService,
     ShiftOverlapService,
     WorkloadService,
-    AuditService,      // Servicio de Auditoría (Fichaje)
-    GeofencingService  // Dependencia de Auditoría
+    AuditService,
+    GeofencingService,
+    // 2. Registrarlo aquí
+    PatternService 
   ],
   exports: [
     SchedulingService,
     WorkloadService,
-    AuditService       // Exportamos para que la API lo vea
+    AuditService,
+    // 3. Exportarlo aquí para que index.ts lo vea
+    PatternService 
   ],
 })
 export class SchedulingModule {}
@@ -2080,6 +2146,7 @@ export class SchedulingService {
     return new Date(input);
   }
 
+  // --- CREAR TURNO INDIVIDUAL (Desde cero) ---
   async assignShift(shiftData: Partial<IShift>, userAuth: admin.auth.DecodedIdToken): Promise<IShift> {
     const dbInstance = this.getDb(); 
     const newShiftRef = dbInstance.collection(SHIFTS_COLLECTION).doc();
@@ -2099,29 +2166,37 @@ export class SchedulingService {
     const employeeId = shiftData.employeeId!;
     if (newStart.getTime() >= newEnd.getTime()) throw new BadRequestException('Horario inválido.');
 
+    // Validar Reglas de Negocio
     try {
         await this.workloadService.validateAssignment(employeeId, newStart, newEnd);
     } catch (businessRuleError: any) {
         console.warn(`[BUSINESS_RULE] ${businessRuleError.message}`);
-        throw new functions.https.HttpsError('failed-precondition', businessRuleError.message);
+        if (employeeId !== 'VACANTE') {
+             throw new functions.https.HttpsError('failed-precondition', businessRuleError.message);
+        }
     }
 
+    // Transacción para asegurar consistencia (Doble chequeo)
     try {
       await dbInstance.runTransaction(async (transaction) => {
-        const overlappingQuery = dbInstance.collection(SHIFTS_COLLECTION)
-          .where('employeeId', '==', employeeId)
-          .where('endTime', '>', newStart) 
-          .limit(10); 
+        if (employeeId !== 'VACANTE') {
+            // Re-validación atómica de solapamiento
+            const overlappingQuery = dbInstance.collection(SHIFTS_COLLECTION)
+              .where('employeeId', '==', employeeId)
+              .where('endTime', '>', newStart) 
+              .limit(10); 
 
-        const snapshot = await transaction.get(overlappingQuery);
-        const hasOverlap = snapshot.docs.some(doc => {
-            const data = doc.data();
-            const existStart = this.convertToDate(data.startTime);
-            const existEnd = this.convertToDate(data.endTime);
-            return this.overlapService.isOverlap(existStart, existEnd, newStart, newEnd);
-        });
+            const snapshot = await transaction.get(overlappingQuery);
+            const hasOverlap = snapshot.docs.some(doc => {
+                const data = doc.data();
+                if (data.status === 'Canceled') return false;
+                const existStart = this.convertToDate(data.startTime);
+                const existEnd = this.convertToDate(data.endTime);
+                return this.overlapService.isOverlap(existStart, existEnd, newStart, newEnd);
+            });
 
-        if (hasOverlap) throw new functions.https.HttpsError('already-exists', 'Solapamiento detectado.');
+            if (hasOverlap) throw new functions.https.HttpsError('already-exists', 'Solapamiento detectado en transacción.');
+        }
         
         const finalShift: IShift = {
           id: newShiftRef.id,
@@ -2142,30 +2217,157 @@ export class SchedulingService {
       });
 
       return { id: newShiftRef.id, ...shiftData } as IShift;
+
     } catch (error: any) {
         if (error instanceof functions.https.HttpsError) throw error;
         const msg = error.message || 'Error desconocido';
-        if (msg.includes('LÍMITE') || msg.includes('BLOQUEO')) throw new functions.https.HttpsError('failed-precondition', msg);
+        if (msg.includes('LÍMITE') || msg.includes('BLOQUEO') || msg.includes('SOLAPAMIENTO')) {
+            throw new functions.https.HttpsError('failed-precondition', msg);
+        }
         throw new functions.https.HttpsError('internal', msg);
     }
   }
 
+  // --- EDITAR TURNO (O ASIGNAR VACANTE) ---
+  // 🛑 FIX: Permite actualizar employeeId y valida conflictos
   async updateShift(shiftId: string, updateData: Partial<IShift>): Promise<void> {
       const db = this.getDb();
       const shiftRef = db.collection(SHIFTS_COLLECTION).doc(shiftId);
+      
+      // 1. Obtener datos actuales
+      const currentDoc = await shiftRef.get();
+      if (!currentDoc.exists) throw new functions.https.HttpsError('not-found', 'Turno no encontrado');
+      const currentShift = currentDoc.data() as IShift;
+
+      // 2. Calcular valores finales (Mezcla lo nuevo con lo viejo)
+      const effectiveEmployeeId = updateData.employeeId || currentShift.employeeId;
+      const effectiveStart = updateData.startTime ? this.convertToDate(updateData.startTime) : this.convertToDate(currentShift.startTime);
+      const effectiveEnd = updateData.endTime ? this.convertToDate(updateData.endTime) : this.convertToDate(currentShift.endTime);
+
+      // 3. VALIDACIÓN DE NEGOCIO (Si es empleado real y cambiaron datos clave)
+      const isRealEmployee = effectiveEmployeeId !== 'VACANTE';
+      const hasChanged = updateData.employeeId !== undefined || updateData.startTime !== undefined || updateData.endTime !== undefined;
+
+      if (isRealEmployee && hasChanged) {
+           try {
+               // 🛑 FIX: Pasamos shiftId para excluirlo de la validación (evitar auto-solapamiento)
+               await this.workloadService.validateAssignment(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
+           } catch (e: any) {
+               throw new functions.https.HttpsError('failed-precondition', e.message);
+           }
+      }
+
+      // 4. Preparar Update
       const safeUpdate = { ...updateData };
       delete (safeUpdate as any).id; 
-      delete (safeUpdate as any).employeeId; 
       
-      if (safeUpdate.startTime) safeUpdate.startTime = admin.firestore.Timestamp.fromDate(this.convertToDate(safeUpdate.startTime));
-      if (safeUpdate.endTime) safeUpdate.endTime = admin.firestore.Timestamp.fromDate(this.convertToDate(safeUpdate.endTime));
+      // 🛑 IMPORTANTE: NO BORRAMOS employeeId NI employeeName
+      
+      if (safeUpdate.startTime) safeUpdate.startTime = admin.firestore.Timestamp.fromDate(effectiveStart);
+      if (safeUpdate.endTime) safeUpdate.endTime = admin.firestore.Timestamp.fromDate(effectiveEnd);
+      
       safeUpdate.updatedAt = admin.firestore.Timestamp.now();
+      
       await shiftRef.update(safeUpdate);
   }
 
+  // --- ELIMINAR TURNO ---
   async deleteShift(shiftId: string): Promise<void> {
       const db = this.getDb();
       await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
+  }
+
+  // --- REPLICAR ESTRUCTURA (Clonar Días) ---
+  async replicateDailyStructure(
+    objectiveId: string, 
+    sourceDateStr: string, 
+    targetStartDateStr: string, 
+    targetEndDateStr: string, 
+    schedulerId: string
+  ): Promise<{ created: number, skipped: number }> {
+    const db = this.getDb();
+
+    // Usamos UTC para consistencia absoluta de fechas
+    const sourceDate = new Date(sourceDateStr + 'T12:00:00Z'); 
+    const startSource = new Date(sourceDate); startSource.setUTCHours(0,0,0,0);
+    const endSource = new Date(sourceDate); endSource.setUTCHours(23,59,59,999);
+
+    const sourceShiftsSnap = await db.collection(SHIFTS_COLLECTION)
+        .where('objectiveId', '==', objectiveId)
+        .where('startTime', '>=', admin.firestore.Timestamp.fromDate(startSource))
+        .where('startTime', '<=', admin.firestore.Timestamp.fromDate(endSource))
+        .get();
+
+    if (sourceShiftsSnap.empty) {
+        throw new functions.https.HttpsError('not-found', 'No hay turnos en el día origen para copiar.');
+    }
+
+    const sourceShifts = sourceShiftsSnap.docs.map(doc => doc.data() as IShift);
+    
+    const batch = db.batch();
+    let opCount = 0;
+    let skipped = 0;
+    const MAX_BATCH_SIZE = 450; 
+
+    const startTarget = new Date(targetStartDateStr + 'T12:00:00Z');
+    const endTarget = new Date(targetEndDateStr + 'T12:00:00Z');
+
+    // Bucle día por día
+    for (let d = new Date(startTarget); d <= endTarget; d.setDate(d.getDate() + 1)) {
+        
+        // Verificamos si ya hay turnos ese día para no pisar
+        const dayStart = new Date(d); dayStart.setUTCHours(0,0,0,0);
+        const dayEnd = new Date(d); dayEnd.setUTCHours(23,59,59,999);
+        
+        const existingCheck = await db.collection(SHIFTS_COLLECTION)
+            .where('objectiveId', '==', objectiveId)
+            .where('startTime', '>=', admin.firestore.Timestamp.fromDate(dayStart))
+            .where('startTime', '<=', admin.firestore.Timestamp.fromDate(dayEnd))
+            .limit(1)
+            .get();
+
+        if (!existingCheck.empty) {
+            skipped++;
+            continue; 
+        }
+
+        for (const template of sourceShifts) {
+            const tStart = this.convertToDate(template.startTime);
+            const tEnd = this.convertToDate(template.endTime);
+            
+            // Calculamos nueva fecha manteniendo la hora original UTC
+            const newStart = new Date(d);
+            newStart.setUTCHours(tStart.getUTCHours(), tStart.getUTCMinutes(), 0, 0);
+            
+            const durationMs = tEnd.getTime() - tStart.getTime();
+            const newEnd = new Date(newStart.getTime() + durationMs);
+
+            const newShiftRef = db.collection(SHIFTS_COLLECTION).doc();
+            
+            const newShift: IShift = {
+                id: newShiftRef.id,
+                objectiveId: objectiveId,
+                objectiveName: template.objectiveName,
+                employeeId: template.employeeId, // Copia el empleado o VACANTE según corresponda
+                employeeName: template.employeeName,
+                role: template.role || 'Vigilador',
+                startTime: admin.firestore.Timestamp.fromDate(newStart),
+                endTime: admin.firestore.Timestamp.fromDate(newEnd),
+                status: 'Assigned',
+                schedulerId: schedulerId,
+                updatedAt: admin.firestore.Timestamp.now()
+            };
+
+            batch.set(newShiftRef, newShift);
+            opCount++;
+            if (opCount >= MAX_BATCH_SIZE) break;
+        }
+        if (opCount >= MAX_BATCH_SIZE) break;
+    }
+
+    if (opCount > 0) await batch.commit();
+
+    return { created: opCount, skipped };
   }
 }
 
@@ -2280,29 +2482,38 @@ const SHIFTS_COLLECTION = 'turnos';
 export class WorkloadService {
   private getDb = () => admin.app().firestore();
 
-  async validateAssignment(employeeId: string, shiftStart: Date, shiftEnd: Date): Promise<void> {
+  // 🛑 ACTUALIZADO: Acepta excludeShiftId para ignorar el turno actual al editar
+  async validateAssignment(employeeId: string, shiftStart: Date, shiftEnd: Date, excludeShiftId?: string): Promise<void> {
     const db = this.getDb();
-    const empDoc = await db.collection(EMPLOYEES_COLLECTION).doc(employeeId).get();
     
-    if (!empDoc.exists) throw new BadRequestException('Employee not found');
+    // Validar existencia del empleado
+    const empDoc = await db.collection(EMPLOYEES_COLLECTION).doc(employeeId).get();
+    if (!empDoc.exists) throw new BadRequestException('Empleado no encontrado');
     const employee = empDoc.data() as IEmployee;
 
-    // 1. Solapamiento (Llama al método nuevo)
-    const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd);
+    // 1. Validar Solapamiento (Conflictos de horario)
+    const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd, excludeShiftId);
     if (conflicts.length > 0) {
-        throw new ConflictException('SOLAPAMIENTO DETECTADO: El empleado ya tiene un turno asignado en este período.');
+        // Formateamos la hora para que el error sea claro en el Frontend
+        const c = conflicts[0];
+        const startStr = (c.startTime as any).toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const endStr = (c.endTime as any).toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        throw new ConflictException(`¡CONFLICTO! ${employee.name} ya cubre un turno de ${startStr} a ${endStr}.`);
     }
 
-    // 2. Disponibilidad
+    // 2. Validar Disponibilidad (Ausencias/Licencias)
     await this.checkAvailability(employeeId, shiftStart, shiftEnd);
-
-    // 3. Límite Mensual
+    
+    // 3. Validar Límite Mensual de Horas
     await this.checkMonthlyLimit(employee, shiftStart, shiftEnd);
   }
 
-  // 🛑 MÉTODO QUE FALTABA EN TU CÓDIGO
-  async checkShiftOverlap(employeeId: string, start: Date, end: Date): Promise<IShift[]> {
+  // 🛑 ACTUALIZADO: Filtra el ID excluido para permitir edición
+  async checkShiftOverlap(employeeId: string, start: Date, end: Date, excludeShiftId?: string): Promise<IShift[]> {
     const db = this.getDb();
+    
+    // Buscamos turnos de este empleado que terminen después de que empiece el nuevo
+    // (Optimizamos la query para traer solo candidatos posibles)
     const shiftsQuery = db.collection(SHIFTS_COLLECTION)
         .where('employeeId', '==', employeeId)
         .where('endTime', '>', start);
@@ -2311,11 +2522,16 @@ export class WorkloadService {
     const conflictingShifts: IShift[] = [];
 
     snapshot.forEach(doc => {
+        // 🛑 FIX: Si es el mismo turno que estamos editando, lo ignoramos
+        if (excludeShiftId && doc.id === excludeShiftId) return;
+
         const shift = doc.data(); 
         const sStart = (shift.startTime as admin.firestore.Timestamp).toDate();
         
-        if (sStart.getTime() < end.getTime()) {
-             // Doble casting para evitar error de tipos
+        // Verificamos intersección de tiempos:
+        // (InicioExistente < FinNuevo) AND (FinExistente > InicioNuevo)
+        // La query de Firestore ya cubre (FinExistente > InicioNuevo), solo falta validar el inicio.
+        if (sStart.getTime() < end.getTime() && shift.status !== 'Canceled') {
              conflictingShifts.push({ id: doc.id, ...shift } as unknown as IShift);
         }
     });
@@ -2324,6 +2540,7 @@ export class WorkloadService {
 
   private async checkAvailability(employeeId: string, start: Date, end: Date): Promise<void> {
     const db = this.getDb();
+    // Buscamos ausencias que terminen después del inicio del turno
     const absencesSnapshot = await db.collection(ABSENCES_COLLECTION)
       .where('employeeId', '==', employeeId)
       .where('endDate', '>=', start)
@@ -2334,15 +2551,20 @@ export class WorkloadService {
       const absStart = (absence.startDate as unknown as admin.firestore.Timestamp).toDate();
       const absEnd = (absence.endDate as unknown as admin.firestore.Timestamp).toDate();
 
+      // Verificamos si hay superposición real
       if (start.getTime() < absEnd.getTime() && end.getTime() > absStart.getTime()) {
-        throw new ConflictException(`BLOQUEO: El empleado está ausente por: ${absence.type}`);
+        throw new ConflictException(`BLOQUEO: El empleado está de licencia (${absence.type}) en esas fechas.`);
       }
     });
   }
 
   private async checkMonthlyLimit(employee: IEmployee, newShiftStart: Date, newShiftEnd: Date): Promise<void> {
     const db = this.getDb();
+    
+    // Calcular duración del nuevo turno
     const newDurationHours = (newShiftEnd.getTime() - newShiftStart.getTime()) / (1000 * 60 * 60);
+    
+    // Definir rango del mes actual
     const startOfMonth = new Date(newShiftStart.getFullYear(), newShiftStart.getMonth(), 1);
     const endOfMonth = new Date(newShiftStart.getFullYear(), newShiftStart.getMonth() + 1, 0, 23, 59, 59);
 
@@ -2355,6 +2577,9 @@ export class WorkloadService {
     let accumulatedHours = 0;
     shiftsSnapshot.forEach(doc => {
       const shift = doc.data();
+      // Ignoramos cancelados
+      if (shift.status === 'Canceled') return;
+
       const sStart = (shift.startTime as admin.firestore.Timestamp).toDate();
       const sEnd = (shift.endTime as admin.firestore.Timestamp).toDate();
       const duration = (sEnd.getTime() - sStart.getTime()) / (1000 * 60 * 60);
@@ -2362,10 +2587,12 @@ export class WorkloadService {
     });
 
     const totalProjected = accumulatedHours + newDurationHours;
-    const maxHours = employee.maxHoursPerMonth || 176;
+    const maxHours = employee.maxHoursPerMonth || 176; // Default legal 176hs
 
     if (totalProjected > maxHours) {
-      throw new ConflictException(`LÍMITE EXCEDIDO: Acumulado(${accumulatedHours.toFixed(1)}h) + Nuevo supera el máximo.`);
+      // Opcional: Podrías solo loguear un warning en lugar de bloquear
+      // console.warn(`Límite excedido para ${employee.name}`);
+      throw new ConflictException(`LÍMITE EXCEDIDO: Acumulado(${accumulatedHours.toFixed(1)}h) + Nuevo supera el máximo de ${maxHours}h.`);
     }
   }
 }
@@ -2605,6 +2832,7 @@ FILE: apps\web\package.json
     "@fullcalendar/react": "^6.1.19",
     "@fullcalendar/timegrid": "^6.1.19",
     "@react-google-maps/api": "^2.20.7",
+    "date-fns": "^4.1.0",
     "firebase": "^12.6.0",
     "lucide-react": "^0.556.0",
     "next": "16.0.5",
@@ -2680,109 +2908,292 @@ export default withAuthGuard(NewClientPage, ['admin']);
 ================================================================================
 FILE: apps\web\pages\admin\dashboard.tsx
 ================================================================================
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import Head from 'next/head';
+import { useRouter } from 'next/router';
+import { addDays, startOfWeek, addHours, format } from 'date-fns'; 
+import { Users, Calendar as CalendarIcon, Plus } from 'lucide-react';
+
+// --- IMPORTS DE TU PROYECTO ---
 import { withAuthGuard } from '@/components/common/withAuthGuard';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import { DragAndDropScheduler } from '@/components/admin/scheduler';
 import { useClient } from '@/context/ClientContext';
 import { callManageData } from '@/services/firebase-client.service';
-import { IObjective } from '@/common/interfaces/client.interface';
-import { 
-    Users, Calendar, AlertCircle, 
-    Clock, ChevronDown, MapPin 
-} from 'lucide-react';
+import { IObjective } from '@/common/interfaces/client.interface'; 
 
-function PlanningStudioPage() {
-    const { selectedClientId } = useClient();
-    
-    const [objectives, setObjectives] = useState<IObjective[]>([]);
-    const [currentObjectiveId, setCurrentObjectiveId] = useState<string>('');
-    const [viewMode, setViewMode] = useState<'timeline' | 'calendar'>('calendar');
+// --- IMPORT DEL SCHEDULER ---
+import { DragAndDropScheduler, SchedulerEvent, ViewType } from '@/components/admin/scheduler';
 
-    useEffect(() => {
-        if (!selectedClientId) {
-            setObjectives([]);
-            setCurrentObjectiveId('');
-            return;
-        }
-        const load = async () => {
-            try {
-                const res = await callManageData({ 
-                    action: 'GET_ALL_OBJECTIVES', 
-                    payload: { clientId: selectedClientId } 
-                });
-                const data = (res.data as any).data || [];
-                setObjectives(data);
-                
-                if (data.length > 0) {
-                    setCurrentObjectiveId(data[0].id);
-                } else {
-                    setCurrentObjectiveId('');
-                }
-            } catch (e) { 
-                console.error(e); 
-            }
-        };
-        load();
-    }, [selectedClientId]);
-
-    return (
-        <DashboardLayout title="Planificación Operativa">
-            <div className="flex flex-col h-[calc(100vh-140px)] gap-4">
-                {/* COMMAND BAR */}
-                <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4 shrink-0">
-                    {/* KPIs */}
-                    <div className="flex gap-4 w-full md:w-auto overflow-x-auto pb-2 md:pb-0 no-scrollbar">
-                        <div className="flex items-center gap-3 px-4 py-2 bg-red-50 border border-red-100 rounded-lg min-w-[150px]">
-                            <div className="p-1.5 bg-red-100 text-red-600 rounded-full"><AlertCircle size={18} /></div>
-                            <div><p className="text-[10px] text-red-600 font-bold uppercase">Conflictos</p><p className="text-lg font-bold text-slate-800 leading-none">-</p></div>
-                        </div>
-                        <div className="flex items-center gap-3 px-4 py-2 bg-blue-50 border border-blue-100 rounded-lg min-w-[150px]">
-                            <div className="p-1.5 bg-blue-100 text-blue-600 rounded-full"><Clock size={18} /></div>
-                            <div><p className="text-[10px] text-blue-600 font-bold uppercase">Horas</p><p className="text-lg font-bold text-slate-800 leading-none">-</p></div>
-                        </div>
-                    </div>
-
-                    {/* Selector */}
-                    <div className="flex items-center gap-2 w-full md:w-auto flex-1 justify-end">
-                        <div className="relative w-full md:w-72">
-                            <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-500" size={18} />
-                            <select 
-                                className="w-full pl-10 pr-8 py-2.5 text-sm border border-indigo-200 bg-indigo-50/30 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-slate-700 appearance-none cursor-pointer hover:bg-indigo-50 transition"
-                                value={currentObjectiveId}
-                                onChange={(e) => setCurrentObjectiveId(e.target.value)}
-                                disabled={objectives.length === 0}
-                            >
-                                {objectives.length === 0 
-                                    ? <option value="">Sin objetivos registrados</option> 
-                                    : objectives.map(o => <option key={o.id} value={o.id}>{o.name}</option>)
-                                }
-                            </select>
-                            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={16} />
-                        </div>
-                        
-                        <div className="h-8 w-px bg-slate-200 mx-2 hidden md:block"></div>
-                        
-                        <div className="flex bg-slate-100 p-1 rounded-lg shrink-0">
-                            <button onClick={() => setViewMode('calendar')} className={`p-1.5 rounded-md transition-all ${viewMode === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Vista Mensual"><Calendar size={18} /></button>
-                            <button onClick={() => setViewMode('timeline')} className={`p-1.5 rounded-md transition-all ${viewMode === 'timeline' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`} title="Vista Semanal"><Users size={18} /></button>
-                        </div>
-                    </div>
-                </div>
-
-                {/* WORKBENCH */}
-                <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden relative">
-                    <DragAndDropScheduler 
-                        objectiveId={currentObjectiveId} 
-                        viewMode={viewMode} 
-                    />
-                </div>
-            </div>
-        </DashboardLayout>
-    );
+// --- TIPOS ---
+interface Shift extends IObjective {
+  status?: 'assigned' | 'vacant' | 'conflict';
+  employeeName?: string;
+  role?: string;
+  date?: string | Date;
+  endDate?: string | Date;
+  description?: string; // <--- CORRECCIÓN: Agregado para evitar el error TS
 }
 
-export default withAuthGuard(PlanningStudioPage, ['admin', 'scheduler', 'manager']);
+interface PlanningStats {
+  totalHours: number;
+  vacancies: number;
+  occupancyRate: number;
+}
+
+// MOCK DE EMPLEADOS
+const AVAILABLE_STAFF = [
+  { id: 'u1', name: 'Franco Sartori', role: 'Vigilador' },
+  { id: 'u2', name: 'Debora Quinteros', role: 'Limpieza' },
+  { id: 'u3', name: 'Mauro Martinez', role: 'Supervisor' },
+  { id: 'u4', name: 'Juan Perez', role: 'Vigilador' },
+];
+
+const Dashboard = () => {
+  const router = useRouter();
+  
+  // 1. CONTEXTO
+  const context = useClient();
+  const client = (context as any)?.client || context || null;
+
+  // 2. ESTADO
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [loading, setLoading] = useState<boolean>(false); 
+  const [stats, setStats] = useState<PlanningStats>({ totalHours: 0, vacancies: 0, occupancyRate: 0 });
+
+  // 3. RECUPERACIÓN DE DATOS
+  const fetchPlanningData = useCallback(async () => {
+    if (!client?.id) return;
+
+    setLoading(true);
+    try {
+      console.log(`[Planificador] Buscando turnos para: ${client.id}`);
+      
+      const response = await (callManageData as any)('get_objectives', { 
+        clientId: client.id 
+      });
+
+      if (response && Array.isArray(response)) {
+        const data = response as Shift[];
+        setShifts(data);
+        calculateStats(data);
+      } else {
+        setShifts([]);
+      }
+    } catch (error) {
+      console.error("[Planificador] Error:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, [client?.id]); 
+
+  const calculateStats = (data: Shift[]) => {
+    const total = data.length;
+    const assigned = data.filter(s => s.status === 'assigned' || (s as any).completed).length;
+    setStats({
+      totalHours: total * 8, 
+      vacancies: total - assigned,
+      occupancyRate: total > 0 ? Math.round((assigned / total) * 100) : 0
+    });
+  };
+
+  useEffect(() => {
+    if (client?.id) fetchPlanningData();
+  }, [fetchPlanningData, client?.id]);
+
+  // 4. GENERADOR DE ESTRUCTURA
+  const handleGenerateStructure = async () => {
+    if (!client?.id) {
+        alert("Error: Cliente no identificado.");
+        return;
+    }
+
+    const confirm = window.confirm("¿Generar estructura base de turnos simulada?");
+    if (!confirm) return;
+
+    setLoading(true);
+    try {
+        const newShifts: Shift[] = [];
+        const startOfCurrentWeek = startOfWeek(new Date(), { weekStartsOn: 1 });
+
+        for (let i = 0; i < 5; i++) {
+            const day = addDays(startOfCurrentWeek, i);
+            
+            // Turno Mañana
+            newShifts.push({
+                id: `temp_${i}_m`,
+                name: 'VACANTE - Mañana',
+                description: 'Puesto de Guardia',
+                date: addHours(day, 8).toISOString(),
+                endDate: addHours(day, 16).toISOString(),
+                status: 'vacant',
+                role: 'Vigilador',
+                clientId: client.id,
+                address: 'Sede Principal',
+                location: 'General', 
+                type: 'Operativo'
+            } as unknown as Shift);
+
+            // Turno Tarde
+            newShifts.push({
+                id: `temp_${i}_t`,
+                name: 'VACANTE - Tarde',
+                description: 'Ronda Perimetral',
+                date: addHours(day, 16).toISOString(),
+                endDate: addHours(day, 23).toISOString(),
+                status: 'vacant',
+                role: 'Vigilador',
+                clientId: client.id,
+                address: 'Sede Principal',
+                location: 'General',
+                type: 'Operativo'
+            } as unknown as Shift);
+        }
+
+        const combinedShifts = [...shifts, ...newShifts];
+        setShifts(combinedShifts);
+        calculateStats(combinedShifts);
+
+    } catch (e) {
+        console.error("Error generando estructura:", e);
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  // 5. MAPEO VISUAL
+  const calendarEvents: SchedulerEvent[] = useMemo(() => {
+    return shifts.map((shift) => {
+      const startDate = new Date(shift.date || new Date());
+      const endDate = shift.endDate ? new Date(shift.endDate) : addDays(startDate, 0); 
+
+      let colorClass = 'bg-gray-50 border-gray-300 text-gray-500 border-dashed hover:bg-gray-100'; 
+      let title = 'VACANTE';
+
+      if (shift.employeeName || shift.status === 'assigned') {
+        colorClass = 'bg-blue-100 border-blue-500 text-blue-900 shadow-sm';
+        title = shift.employeeName || shift.name || 'Asignado';
+      } else if (shift.status === 'conflict') {
+        colorClass = 'bg-red-100 border-red-500 text-red-900';
+        title = 'CONFLICTO';
+      }
+
+      return {
+        id: shift.id,
+        title: title,
+        // Ahora esto funcionará porque 'description' existe en la interfaz Shift
+        description: shift.description || shift.role || 'Turno Operativo',
+        start: startDate,
+        end: endDate, 
+        color: colorClass,
+        originalData: shift 
+      };
+    });
+  }, [shifts]);
+
+  const pageTitle = client?.name ? `Planificación - ${client.name}` : 'Planificación Operativa';
+
+  return (
+    <DashboardLayout title={pageTitle}>
+      <Head>
+        <title>{pageTitle} | CronoApp</title>
+      </Head>
+
+      <div className="flex flex-col h-[calc(100vh-80px)] space-y-4 p-2">
+        
+        {/* BARRA SUPERIOR */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-wrap gap-6 items-center justify-between">
+            <div>
+                <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <Users className="text-blue-600" size={24}/>
+                    {client?.name || 'Seleccione Cliente...'}
+                </h1>
+                <p className="text-xs text-gray-500 mt-1">
+                    {loading ? 'Procesando...' : 'Tablero de Control de Turnos'}
+                </p>
+            </div>
+
+            <div className="flex gap-4">
+                <div className="px-4 py-2 bg-gray-50 rounded-lg border border-gray-100 text-center">
+                    <span className="text-[10px] text-gray-500 font-bold block uppercase">Vacantes</span>
+                    <span className="text-xl font-bold text-red-600">{stats.vacancies}</span>
+                </div>
+                <div className="px-4 py-2 bg-gray-50 rounded-lg border border-gray-100 text-center">
+                    <span className="text-[10px] text-gray-500 font-bold block uppercase">Cubiertos</span>
+                    <span className="text-xl font-bold text-green-600">
+                        {Math.round((stats.occupancyRate / 100) * (stats.vacancies + (stats.totalHours/8)))}
+                    </span>
+                </div>
+            </div>
+
+            <div className="flex gap-2">
+                 <button 
+                   onClick={fetchPlanningData} 
+                   className="px-3 py-2 text-sm border rounded-lg hover:bg-gray-50 text-gray-600 transition-colors"
+                   disabled={!client?.id}
+                 >
+                   Refrescar
+                 </button>
+                 <button 
+                    onClick={handleGenerateStructure}
+                    disabled={!client?.id || loading}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                 >
+                   <Plus size={16} />
+                   Generar Estructura
+                 </button>
+            </div>
+        </div>
+
+        {/* ÁREA DE TRABAJO */}
+        <div className="flex flex-1 gap-4 overflow-hidden">
+            
+            {/* SIDEBAR: EMPLEADOS */}
+            <div className="w-64 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col hidden md:flex">
+                <div className="p-3 border-b border-gray-100 bg-gray-50/50 rounded-t-xl">
+                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Plantilla Disponible</h3>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-2 scrollbar-thin">
+                    {AVAILABLE_STAFF.map(staff => (
+                        <div 
+                            key={staff.id} 
+                            draggable 
+                            onDragStart={(e) => {
+                                e.dataTransfer.setData("employeeId", staff.id);
+                                e.dataTransfer.setData("employeeName", staff.name);
+                            }}
+                            className="p-3 bg-white border border-gray-200 rounded-lg shadow-sm cursor-grab hover:border-blue-400 hover:shadow-md transition-all group select-none active:cursor-grabbing"
+                        >
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-xs font-bold border border-indigo-100">
+                                    {staff.name.charAt(0)}
+                                </div>
+                                <div>
+                                    <p className="text-sm font-medium text-gray-700 group-hover:text-blue-700">{staff.name}</p>
+                                    <p className="text-[10px] text-gray-400 uppercase font-medium">{staff.role}</p>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* PLANIFICADOR */}
+            <div className="flex-1 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative flex flex-col">
+                <DragAndDropScheduler 
+                    events={calendarEvents}
+                    isLoading={loading}
+                    onEventClick={(evt) => console.log("Detalle:", evt)}
+                    startHour={6} 
+                    endHour={23}
+                />
+            </div>
+        </div>
+      </div>
+    </DashboardLayout>
+  );
+};
+
+export default withAuthGuard(Dashboard);
 
 ================================================================================
 FILE: apps\web\pages\admin\employees.tsx
@@ -2813,7 +3224,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { withAuthGuard } from '@/components/common/withAuthGuard'; 
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import { useClient } from '@/context/ClientContext'; // 🛑 Contexto para lista de clientes
+import { useClient } from '@/context/ClientContext';
 import { 
     getObjectiveControlData, 
     getObjectiveContracts, 
@@ -2826,16 +3237,17 @@ import {
     createShiftType,
     updateShiftType,
     deleteShiftType,
-    updateObjective 
+    updateObjective,
+    createPattern // 🛑 IMPORTANTE: Para automatizar la regla
 } from '@/services/firebase-client.service';
 import { IObjective, IServiceContract, IShiftType } from '@/common/interfaces/client.interface';
 import { IShift } from '@/common/interfaces/shift.interface';
 import { IEmployee } from '@/common/interfaces/employee.interface';
 import toast from 'react-hot-toast';
-import { GeocodingSelector } from '@/components/admin/GeocodingSelector'; 
+import { GeocodingSelector } from '@/components/admin/GeocodingSelector';
 import { 
     LayoutDashboard, Settings, MapPin, AlertTriangle, 
-    Plus, Trash2, Edit2, FileText, Users, CalendarDays, Clock 
+    Plus, Trash2, Edit2, FileText, Users, CalendarDays, Clock, Calculator, X 
 } from 'lucide-react';
 
 type TabView = 'operations' | 'config' | 'map';
@@ -2843,9 +3255,7 @@ type TabView = 'operations' | 'config' | 'map';
 function ObjectiveDetailPage() {
     const router = useRouter();
     const { id } = router.query;
-    
-    // Acceso a la lista global de clientes para el selector de edición
-    const { clients } = useClient(); 
+    const { clients } = useClient();
 
     // Datos
     const [objective, setObjective] = useState<IObjective | null>(null);
@@ -2866,21 +3276,21 @@ function ObjectiveDetailPage() {
     const [showGeoSelector, setShowGeoSelector] = useState(false);
 
     // Forms
-    // 🛑 FORMULARIO DE SERVICIO COMPLETO (Fechas, Días, Dotación)
     const [serviceForm, setServiceForm] = useState({ 
         name: '', 
         hours: 720, 
         isActive: true, 
         quantity: 1, 
-        days: [0,1,2,3,4,5,6],
+        days: [0,1,2,3,4,5,6], // Default Lunes a Domingo
         startDate: '', 
         endDate: '' 
     });
+    
+    // 🛑 ESTADO PARA CÁLCULO PREDICTIVO
+    const [serviceMetrics, setServiceMetrics] = useState({ totalVacancies: 0, estimatedHours: 0 });
 
     const [shiftForm, setShiftForm] = useState({ employeeId: '', start: '', end: '' });
     const [modalityForm, setModalityForm] = useState({ id: '', name: '', code: '', startTime: '07:00', durationHours: 12 });
-    
-    // 🛑 FORMULARIO EDITAR OBJETIVO
     const [editObjForm, setEditObjForm] = useState({ name: '', address: '', clientId: '', latitude: '', longitude: '' });
 
     const [selectedContractForModalities, setSelectedContractForModalities] = useState<IServiceContract | null>(null);
@@ -2913,8 +3323,33 @@ function ObjectiveDetailPage() {
         loadEmployees();
         const interval = setInterval(loadData, 60000);
         return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id]);
+
+    // 🛑 CALCULADORA EN TIEMPO REAL (Para Modal de Servicio)
+    useEffect(() => {
+        if (serviceForm.startDate && serviceForm.quantity) {
+            const start = new Date(serviceForm.startDate);
+            const end = serviceForm.endDate 
+                ? new Date(serviceForm.endDate) 
+                : new Date(start.getFullYear(), start.getMonth() + 1, 0); // Fin de mes default
+            
+            let workingDays = 0;
+            // Iteramos para contar días hábiles según la selección
+            for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                if (serviceForm.days.includes(d.getDay())) workingDays++;
+            }
+            
+            // Estimación: Asumimos 24hs de cobertura por defecto para la proyección inicial
+            // (Ya que aún no hay turnos definidos). O usamos 24 * quantity.
+            const estimatedDailyHours = 24 * serviceForm.quantity; 
+            
+            setServiceMetrics({
+                totalVacancies: workingDays * serviceForm.quantity, // Días * Dotación (simplificado)
+                estimatedHours: workingDays * estimatedDailyHours
+            });
+        }
+    }, [serviceForm]);
+
 
     // Helpers
     const getDateObj = (ts: any) => {
@@ -2925,8 +3360,8 @@ function ObjectiveDetailPage() {
         if (ts.seconds) return new Date(ts.seconds * 1000);
         return new Date();
     };
-    const formatDate = (ts: any) => getDateObj(ts).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
-
+    const formatDate = (ts: any) => getDateObj(ts).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    
     const renderDaysBadges = (days: number[]) => {
         const week = ['D','L','M','M','J','V','S'];
         if (days.length === 7) return <span className="text-xs text-green-600 font-medium">Todos los días (24x7)</span>;
@@ -2941,19 +3376,19 @@ function ObjectiveDetailPage() {
         );
     };
 
-    // KPIs
+    // KPIs Visuales
     const activeShifts = shifts.filter(s => s.status === 'InProgress');
     const upcomingShifts = shifts.filter(s => s.status === 'Assigned' && getDateObj(s.startTime) > new Date());
     const issueShifts = shifts.filter(s => s.status === 'Canceled' || (s.status === 'Assigned' && new Date() > getDateObj(s.startTime)));
     const hasAlerts = issueShifts.length > 0;
 
-    // --- HANDLERS OBJETIVO (EDITAR) ---
+    // --- HANDLERS OBJETIVO ---
     const handleOpenEditObjective = () => {
         if (!objective) return;
         setEditObjForm({
             name: objective.name,
             address: objective.address,
-            clientId: objective.clientId, // Cargamos cliente actual
+            clientId: objective.clientId,
             latitude: String(objective.location.latitude),
             longitude: String(objective.location.longitude)
         });
@@ -2968,7 +3403,7 @@ function ObjectiveDetailPage() {
             await updateObjective(objective.id, {
                 name: editObjForm.name,
                 address: editObjForm.address,
-                clientId: editObjForm.clientId, // Guardamos cliente seleccionado
+                clientId: editObjForm.clientId,
                 location: { latitude: parseFloat(editObjForm.latitude), longitude: parseFloat(editObjForm.longitude) }
             });
             toast.success("Sede actualizada", { id: toastId });
@@ -2982,11 +3417,10 @@ function ObjectiveDetailPage() {
         setShowGeoSelector(false);
     };
 
-    // --- HANDLERS SERVICIOS ---
+    // --- HANDLERS SERVICIO ---
     const handleSaveService = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!serviceForm.startDate) { toast.error("Fecha de inicio obligatoria"); return; }
-        
         const toastId = toast.loading("Procesando...");
         try {
             const payload = {
@@ -2998,23 +3432,22 @@ function ObjectiveDetailPage() {
                 startDate: new Date(serviceForm.startDate).toISOString(),
                 endDate: serviceForm.endDate ? new Date(serviceForm.endDate).toISOString() : undefined
             };
-
             if (editingContract) {
                 await updateServiceContract(editingContract.id, payload);
-                toast.success("Actualizado", { id: toastId });
+                toast.success("Servicio actualizado", { id: toastId });
             } else {
-                await createServiceForObjective({ objectiveId: id as string, ...payload as any }); // as any por compatibilidad rápida
-                toast.success("Creado", { id: toastId });
+                await createServiceForObjective({ objectiveId: id as string, ...payload as any });
+                toast.success("Servicio creado", { id: toastId });
             }
             setShowServiceModal(false); setEditingContract(null); loadData();
         } catch (e: any) { toast.error(e.message, { id: toastId }); }
     };
-    
+
     const handleDeleteService = async (contractId: string) => {
         if (!confirm("¿Eliminar servicio?")) return;
         try { await deleteServiceContract(contractId); toast.success("Eliminado"); loadData(); } catch (e: any) { toast.error(e.message); }
     };
-    
+
     const openEditService = (c: IServiceContract) => {
         setEditingContract(c);
         const formatInput = (v: any) => v ? getDateObj(v).toISOString().split('T')[0] : '';
@@ -3022,18 +3455,18 @@ function ObjectiveDetailPage() {
             name: c.name, hours: c.totalHoursPerMonth, isActive: c.isActive,
             quantity: c.quantity || 1, days: c.daysOfWeek || [0,1,2,3,4,5,6],
             startDate: formatInput(c.startDate), endDate: formatInput(c.endDate)
-        }); 
+        });
         setShowServiceModal(true); 
     };
 
     const openNewService = () => { 
-        setEditingContract(null); 
+        setEditingContract(null);
         const today = new Date().toISOString().split('T')[0];
-        setServiceForm({ name: '', hours: 720, isActive: true, quantity: 1, days: [0,1,2,3,4,5,6], startDate: today, endDate: '' }); 
+        setServiceForm({ name: '', hours: 720, isActive: true, quantity: 1, days: [0,1,2,3,4,5,6], startDate: today, endDate: '' });
         setShowServiceModal(true); 
     };
 
-    // ... (Handlers Modalidades y Turnos se mantienen igual) ...
+    // --- HANDLERS MODALIDADES ---
     const openModalitiesManager = async (contract: IServiceContract) => {
         setSelectedContractForModalities(contract);
         const types = await getShiftTypes(contract.id);
@@ -3043,6 +3476,7 @@ function ObjectiveDetailPage() {
         setShowModalitiesModal(true);
     };
 
+    // 🛑 LÓGICA DE ALTA DE MODALIDAD + PATRÓN AUTOMÁTICO
     const handleSaveModality = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedContractForModalities) return;
@@ -3050,12 +3484,31 @@ function ObjectiveDetailPage() {
         try {
             if (isEditingModality) {
                 await updateShiftType(modalityForm.id, { ...modalityForm });
+                toast.success("Actualizado", { id: toastId });
             } else {
-                await createShiftType({ contractId: selectedContractForModalities.id, color: '#4F46E5', ...modalityForm });
+                // 1. Crear Tipo de Turno
+                const res = await createShiftType({ contractId: selectedContractForModalities.id, color: '#4F46E5', ...modalityForm });
+                const newShiftType = (res.data as any).data;
+
+                // 2. Crear Patrón Automático (Usando datos del contrato padre)
+                // Esto asegura que al ir al planificador ya existan reglas.
+                const cStart = getDateObj(selectedContractForModalities.startDate);
+                const cEnd = selectedContractForModalities.endDate ? getDateObj(selectedContractForModalities.endDate) : undefined;
+                
+                await createPattern({
+                    contractId: selectedContractForModalities.id,
+                    shiftTypeId: newShiftType.id,
+                    daysOfWeek: selectedContractForModalities.daysOfWeek || [0,1,2,3,4,5,6],
+                    quantity: 1, // Base 1 persona
+                    validFrom: cStart.toISOString(),
+                    validTo: cEnd?.toISOString()
+                });
+                toast.success("Modalidad y Regla creadas", { id: toastId });
             }
+            
             const types = await getShiftTypes(selectedContractForModalities.id);
             setContractShiftTypes(types);
-            toast.success("Guardado", { id: toastId });
+            
             if (!isEditingModality) setModalityForm({ id: '', name: '', code: '', startTime: '07:00', durationHours: 12 });
             setIsEditingModality(false);
         } catch (e: any) { toast.error(e.message, { id: toastId }); }
@@ -3075,6 +3528,7 @@ function ObjectiveDetailPage() {
         }
     };
 
+    // --- HANDLER TURNO MANUAL ---
     const handleCreateShift = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!objective) return;
@@ -3128,7 +3582,7 @@ function ObjectiveDetailPage() {
                 {activeTab === 'operations' && (
                     <div className="space-y-6">
                         <div className="flex justify-end">
-                            <button onClick={() => setShowShiftModal(true)} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700 font-bold shadow-sm"><Plus size={18} /> Asignar Turno</button>
+                            <button onClick={() => setShowShiftModal(true)} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700 font-bold shadow-sm"><Plus size={18} /> Asignar Turno Manual</button>
                         </div>
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -3149,7 +3603,7 @@ function ObjectiveDetailPage() {
                     </div>
                 )}
 
-                {/* CONFIG (SERVICIOS MEJORADO) */}
+                {/* CONFIG (SERVICIOS) */}
                 {activeTab === 'config' && (
                     <div className="space-y-6">
                         <div className="flex justify-between items-center">
@@ -3170,10 +3624,10 @@ function ObjectiveDetailPage() {
                                             <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${c.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>{c.isActive ? 'ACTIVO' : 'INACTIVO'}</span>
                                         </div>
                                     </div>
-                                    {/* Datos Operativos Nuevos */}
                                     <div className="space-y-2 text-sm text-slate-600 mb-4 bg-slate-50 p-3 rounded-lg">
                                         <div className="flex justify-between"><span className="flex items-center gap-2 text-xs uppercase font-bold text-slate-400"><Users size={14}/> Dotación</span><span className="font-bold">{c.quantity || 1} Pers.</span></div>
                                         <div className="flex justify-between"><span className="flex items-center gap-2 text-xs uppercase font-bold text-slate-400"><CalendarDays size={14}/> Cobertura</span><div className="flex gap-0.5">{renderDaysBadges(c.daysOfWeek || [])}</div></div>
+                                        <div className="flex justify-between"><span className="flex items-center gap-2 text-xs uppercase font-bold text-slate-400"><Clock size={14}/> Total</span><span className="font-bold">{c.totalHoursPerMonth} hs</span></div>
                                     </div>
                                     <div className="pt-3 border-t border-slate-100">
                                         <button onClick={() => openModalitiesManager(c)} className="w-full py-2 text-xs font-bold text-indigo-600 bg-indigo-50 rounded hover:bg-indigo-100 transition text-center block">Gestionar Turnos Base</button>
@@ -3184,7 +3638,7 @@ function ObjectiveDetailPage() {
                     </div>
                 )}
 
-                {/* MODAL EDITAR OBJETIVO (CON CLIENTE) */}
+                {/* MODAL EDITAR OBJETIVO */}
                 {showEditObjectiveModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
                         <div className="bg-white rounded-xl p-6 w-full max-w-md">
@@ -3212,32 +3666,43 @@ function ObjectiveDetailPage() {
                         </div>
                     </div>
                 )}
-
+                
                 <GeocodingSelector address={editObjForm.address} isOpen={showGeoSelector} onClose={() => setShowGeoSelector(false)} onCoordinatesSelected={handleGeoSelected} />
 
-                {/* MODAL SERVICIO (ACTUALIZADO) */}
+                {/* MODAL SERVICIO (CON CALCULADORA PREDICTIVA) */}
                 {showServiceModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
                         <div className="bg-white rounded-xl p-6 w-full max-w-md">
                             <h3 className="text-lg font-bold mb-4">{editingContract ? 'Editar Servicio' : 'Nuevo Servicio'}</h3>
+                            
+                            {/* 🛑 PANEL PREDICTIVO */}
+                            <div className="bg-gradient-to-r from-slate-50 to-slate-100 p-4 rounded-xl border border-slate-200 mb-6 flex items-center justify-between">
+                                <div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Calculator size={12}/> Estimación</p>
+                                    <p className="text-2xl font-bold text-indigo-700 leading-none">{serviceMetrics.estimatedHours} <span className="text-xs font-normal text-slate-500">hs/mes</span></p>
+                                    <p className="text-[10px] text-slate-400 mt-1">~{serviceMetrics.totalVacancies} vacantes proyectadas</p>
+                                </div>
+                                <div className={`text-2xl font-bold ${serviceMetrics.estimatedHours > serviceForm.hours ? 'text-red-500' : 'text-emerald-500'}`}>
+                                    {serviceMetrics.estimatedHours > serviceForm.hours ? '⚠' : '✓'}
+                                </div>
+                            </div>
+
                             <form onSubmit={handleSaveService} className="space-y-4">
                                 <div><label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Nombre</label><input className="w-full border p-2 rounded" value={serviceForm.name} onChange={e => setServiceForm({...serviceForm, name: e.target.value})} required /></div>
                                 <div className="grid grid-cols-2 gap-4">
-                                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Horas/Mes</label><input className="w-full border p-2 rounded" type="number" value={serviceForm.hours} onChange={e => setServiceForm({...serviceForm, hours: +e.target.value})} required /></div>
-                                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Dotación</label><input className="w-full border p-2 rounded" type="number" min="1" value={serviceForm.quantity} onChange={e => setServiceForm({...serviceForm, quantity: +e.target.value})} required /></div>
+                                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Horas/Mes (Venta)</label><input className="w-full border p-2 rounded" type="number" value={serviceForm.hours} onChange={e => setServiceForm({...serviceForm, hours: +e.target.value})} required /></div>
+                                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1 block">Dotación Simultánea</label><input className="w-full border p-2 rounded" type="number" min="1" value={serviceForm.quantity} onChange={e => setServiceForm({...serviceForm, quantity: +e.target.value})} required /></div>
                                 </div>
-                                {/* FECHAS */}
                                 <div className="bg-slate-50 p-3 rounded border border-slate-100 grid grid-cols-2 gap-2">
-                                    <div><label className="text-[10px] font-bold text-gray-400 uppercase block">Inicio</label><input type="date" className="w-full border p-1 rounded text-sm" value={serviceForm.startDate} onChange={e => setServiceForm({...serviceForm, startDate: e.target.value})} required /></div>
-                                    <div><label className="text-[10px] font-bold text-gray-400 uppercase block">Fin</label><input type="date" className="w-full border p-1 rounded text-sm" value={serviceForm.endDate} onChange={e => setServiceForm({...serviceForm, endDate: e.target.value})} /></div>
+                                    <div><label className="text-[10px] font-bold text-gray-400 uppercase block">Inicio Contrato</label><input type="date" className="w-full border p-1 rounded text-sm" value={serviceForm.startDate} onChange={e => setServiceForm({...serviceForm, startDate: e.target.value})} required /></div>
+                                    <div><label className="text-[10px] font-bold text-gray-400 uppercase block">Fin (Opcional)</label><input type="date" className="w-full border p-1 rounded text-sm" value={serviceForm.endDate} onChange={e => setServiceForm({...serviceForm, endDate: e.target.value})} /></div>
                                 </div>
-                                {/* DIAS */}
                                 <div>
-                                    <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Días</label>
+                                    <label className="text-xs font-bold text-gray-500 uppercase mb-2 block">Días Operativos</label>
                                     <div className="flex justify-between gap-1">
                                         {['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'].map((day, index) => {
                                             const isSelected = serviceForm.days.includes(index);
-                                            return <button key={index} type="button" onClick={() => setServiceForm(p => ({...p, days: isSelected ? p.days.filter(d => d !== index) : [...p.days, index]}))} className={`w-8 h-8 rounded text-xs font-bold ${isSelected ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-400'}`}>{day.charAt(0)}</button>
+                                            return <button key={index} type="button" onClick={() => setServiceForm(p => ({...p, days: isSelected ? p.days.filter(d => d !== index) : [...p.days, index].sort() }))} className={`w-8 h-8 rounded text-xs font-bold ${isSelected ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-400'}`}>{day.charAt(0)}</button>
                                         })}
                                     </div>
                                 </div>
@@ -3256,7 +3721,7 @@ function ObjectiveDetailPage() {
                         <div className="bg-white rounded-xl p-6 w-full max-w-2xl h-[80vh] flex flex-col">
                             <div className="flex justify-between items-center mb-4 border-b pb-2">
                                 <div><h3 className="text-lg font-bold">Modalidades</h3><p className="text-xs text-gray-500">{selectedContractForModalities.name}</p></div>
-                                <button onClick={() => setShowModalitiesModal(false)} className="text-gray-400 hover:text-gray-600">✕</button>
+                                <button onClick={() => setShowModalitiesModal(false)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
                             </div>
                             <div className="flex-1 overflow-y-auto mb-4 space-y-2 p-1">
                                 {contractShiftTypes.map(t => (
@@ -3283,7 +3748,7 @@ function ObjectiveDetailPage() {
                     </div>
                 )}
 
-                {/* MODAL TURNO */}
+                {/* MODAL TURNO MANUAL */}
                 {showShiftModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
                         <div className="bg-white rounded-xl p-6 w-full max-w-md">
@@ -3305,7 +3770,6 @@ function ObjectiveDetailPage() {
                         </div>
                     </div>
                 )}
-
             </div>
         </DashboardLayout>
     );
@@ -4818,12 +5282,15 @@ export function ClientManagement() {
 ================================================================================
 FILE: apps\web\src\components\admin\client-setup-wizard.tsx
 ================================================================================
-import React, { useState } from 'react';
-import { useRouter } from 'next/router'; // 🛑 FIX: Usar router de Next.js para navegación segura
-import { callManageHierarchy } from '@/services/firebase-client.service';
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
+import { callManageHierarchy, createPattern } from '@/services/firebase-client.service';
 import toast from 'react-hot-toast';
+import { 
+    Building2, MapPin, FileText, Clock, CheckCircle2, 
+    ArrowRight, Plus, Calendar, Calculator, AlertTriangle
+} from 'lucide-react';
 
-// Interfaces locales para el estado del formulario
 interface ShiftTypeUI {
   name: string;
   code: string;
@@ -4832,22 +5299,26 @@ interface ShiftTypeUI {
 }
 
 export function ClientSetupWizard() {
-  const router = useRouter(); // Hook de navegación
+  const router = useRouter();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   
-  // IDs generados por el backend a medida que avanzamos
   const [ids, setIds] = useState({ clientId: '', objectiveId: '', contractId: '' });
-
-  // Listado visual de modalidades agregadas en el paso 4
   const [addedShifts, setAddedShifts] = useState<ShiftTypeUI[]>([]);
 
-  // Datos de Formularios
+  // STATES
   const [clientData, setClientData] = useState({ businessName: '', cuit: '', contactName: '', contactEmail: '' });
   const [objData, setObjData] = useState({ name: '', address: '', latitude: '', longitude: '' });
-  const [contractData, setContractData] = useState({ name: '', totalHoursPerMonth: 720 });
   
-  // Datos del formulario de Modalidad actual
+  // 🛑 FIX: Estado extendido para el contrato (Días y Fechas)
+  const [contractData, setContractData] = useState({ 
+      name: '', 
+      totalHoursPerMonth: 720,
+      startDate: new Date().toISOString().split('T')[0], // Default Hoy YYYY-MM-DD
+      endDate: '',
+      daysOfWeek: [1, 2, 3, 4, 5] // Default Lunes a Viernes
+  });
+  
   const [shiftData, setShiftData] = useState<ShiftTypeUI>({ 
     name: 'Turno Mañana', 
     code: 'TM', 
@@ -4855,7 +5326,43 @@ export function ClientSetupWizard() {
     durationHours: 8 
   });
 
-  // --- PASO 1: CREAR CLIENTE ---
+  // --- CALCULADORA EN TIEMPO REAL ---
+  const [metrics, setMetrics] = useState({ totalVacancies: 0, totalHours: 0 });
+
+  useEffect(() => {
+      // Calculamos proyección solo si hay fechas y turnos
+      if (!contractData.startDate || addedShifts.length === 0) return;
+      
+      const start = new Date(contractData.startDate);
+      // Si hay fecha fin la usamos, sino proyectamos a fin de mes de la fecha de inicio
+      const end = contractData.endDate 
+          ? new Date(contractData.endDate) 
+          : new Date(start.getFullYear(), start.getMonth() + 1, 0);
+
+      let workingDaysCount = 0;
+      
+      // Iterar días para contar hábiles según configuración
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          // getDay(): 0=Dom, 1=Lun...
+          if (contractData.daysOfWeek.includes(d.getDay())) {
+              workingDaysCount++;
+          }
+      }
+
+      // Total Turnos Diarios (Suma de todas las modalidades)
+      // Asumimos 1 persona por modalidad (si fueran más, habría que agregar campo 'quantity' al shiftData)
+      const shiftsPerDay = addedShifts.length; 
+      const totalHoursPerDay = addedShifts.reduce((acc, curr) => acc + curr.durationHours, 0);
+
+      setMetrics({
+          totalVacancies: workingDaysCount * shiftsPerDay,
+          totalHours: workingDaysCount * totalHoursPerDay
+      });
+
+  }, [contractData, addedShifts]);
+
+  // --- HANDLERS ---
+
   const handleCreateClient = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -4863,15 +5370,12 @@ export function ClientSetupWizard() {
       const res = await callManageHierarchy({ action: 'CREATE_CLIENT', payload: { ...clientData, status: 'Active' } });
       const data = res.data as any;
       setIds(prev => ({ ...prev, clientId: data.data.id }));
-      toast.success("Empresa creada correctamente");
+      toast.success("Empresa registrada");
       setStep(2);
-    } catch (error: any) {
-      console.error(error);
-      toast.error(`Error: ${error.message}`);
-    } finally { setLoading(false); }
+    } catch (error: any) { toast.error(error.message); } 
+    finally { setLoading(false); }
   };
 
-  // --- PASO 2: CREAR OBJETIVO ---
   const handleCreateObjective = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -4885,185 +5389,233 @@ export function ClientSetupWizard() {
       const res = await callManageHierarchy({ action: 'CREATE_OBJECTIVE', payload });
       const data = res.data as any;
       setIds(prev => ({ ...prev, objectiveId: data.data.id }));
-      toast.success("Objetivo vinculado");
+      toast.success("Sede creada");
       setStep(3);
-    } catch (error: any) {
-      console.error(error);
-      toast.error(`Error: ${error.message}`);
-    } finally { setLoading(false); }
+    } catch (error: any) { toast.error(error.message); } 
+    finally { setLoading(false); }
   };
 
-  // --- PASO 3: CREAR CONTRATO ---
+  // 🛑 PASO 3 CORREGIDO: Envía fechas y días reales
   const handleCreateContract = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
       const payload = {
-        ...contractData,
         objectiveId: ids.objectiveId,
-        startDate: new Date(),
+        name: contractData.name,
+        totalHoursPerMonth: contractData.totalHoursPerMonth,
+        startDate: new Date(contractData.startDate).toISOString(),
+        endDate: contractData.endDate ? new Date(contractData.endDate).toISOString() : undefined,
+        daysOfWeek: contractData.daysOfWeek, // Enviamos el array elegido
+        quantity: 1, // Dotación base por turno (simplificado)
         isActive: true
       };
+      
       const res = await callManageHierarchy({ action: 'CREATE_CONTRACT', payload });
       const data = res.data as any;
       setIds(prev => ({ ...prev, contractId: data.data.id }));
-      toast.success("Contrato generado");
+      
+      toast.success("Contrato configurado");
       setStep(4);
-    } catch (error: any) {
-      console.error(error);
-      toast.error(`Error: ${error.message}`);
-    } finally { setLoading(false); }
+    } catch (error: any) { toast.error(error.message); } 
+    finally { setLoading(false); }
   };
 
-  // --- PASO 4: CREAR TIPO DE TURNO (MODALIDAD) ---
   const handleCreateShiftType = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
+      // 1. Crear Tipo de Turno
       const payload = { ...shiftData, contractId: ids.contractId, color: '#3B82F6' };
+      const resShift = await callManageHierarchy({ action: 'CREATE_SHIFT_TYPE', payload });
+      const shiftTypeData = (resShift.data as any).data;
+
+      // 2. 🛑 Crear Patrón Automático usando la configuración del contrato (Paso 3)
+      await createPattern({
+          contractId: ids.contractId,
+          shiftTypeId: shiftTypeData.id,
+          daysOfWeek: contractData.daysOfWeek, // Usamos los días elegidos en Paso 3
+          quantity: 1, 
+          validFrom: new Date(contractData.startDate).toISOString(), // Fecha inicio real
+          validTo: contractData.endDate ? new Date(contractData.endDate).toISOString() : undefined
+      });
       
-      // Llamada al Backend
-      await callManageHierarchy({ action: 'CREATE_SHIFT_TYPE', payload });
-      
-      toast.success(`Modalidad "${shiftData.name}" agregada`);
-      
-      // 1. Agregamos a la lista visual de abajo para feedback
+      toast.success("Modalidad y Regla agregadas");
       setAddedShifts(prev => [...prev, shiftData]);
       
-      // 2. Reseteamos el formulario para cargar el siguiente rápidamente
+      // Reset form sugerido
+      let nextTime = '06:00';
+      if (shiftData.startTime === '06:00') nextTime = '14:00';
+      if (shiftData.startTime === '14:00') nextTime = '22:00';
+
       setShiftData({ 
         name: '', 
         code: '', 
-        startTime: '14:00', // Sugerencia de siguiente horario
+        startTime: nextTime, 
         durationHours: 8 
       });
 
-    } catch (error: any) {
-      console.error(error);
-      toast.error(`Error: ${error.message}`);
-    } finally { setLoading(false); }
+    } catch (error: any) { toast.error(error.message); } 
+    finally { setLoading(false); }
   };
 
-  // --- ACCIÓN FINAL ---
   const handleFinish = () => {
-    toast.success("Configuración finalizada con éxito.");
-    // 🛑 FIX: Navegación segura de Next.js
+    toast.success("¡Configuración lista!");
     router.push('/admin/dashboard');
   };
 
-  // Estilos reutilizables
-  const inputClass = "w-full border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 py-2 px-3 border mt-1";
-  const labelClass = "block text-sm font-medium text-gray-700";
-  const btnClass = "w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 font-medium shadow-sm";
+  // Helper para toggle de días
+  const toggleDay = (dayIndex: number) => {
+      setContractData(prev => {
+          const exists = prev.daysOfWeek.includes(dayIndex);
+          const newDays = exists 
+              ? prev.daysOfWeek.filter(d => d !== dayIndex)
+              : [...prev.daysOfWeek, dayIndex].sort();
+          return { ...prev, daysOfWeek: newDays };
+      });
+  };
+
+  const inputClass = "w-full border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 py-2.5 px-3 border mt-1 text-sm";
+  const labelClass = "block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1";
+  const btnClass = "w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 transition font-bold shadow-md flex justify-center items-center gap-2 disabled:opacity-50";
 
   return (
-    <div className="max-w-3xl mx-auto bg-white p-8 rounded-2xl shadow-lg border border-gray-100">
+    <div className="max-w-3xl mx-auto bg-white p-8 rounded-2xl shadow-xl border border-slate-100 my-8">
       
-      {/* Barra de Progreso */}
-      <div className="flex justify-between mb-8 relative">
-        <div className="absolute top-1/2 left-0 w-full h-1 bg-gray-100 -z-10 rounded"></div>
-        {[1, 2, 3, 4].map(num => (
-            <div key={num} className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-colors border-4 border-white ${step >= num ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500'}`}>
-                {num}
-            </div>
-        ))}
+      <div className="flex justify-between mb-8 relative px-4">
+        <div className="absolute top-1/2 left-0 w-full h-0.5 bg-slate-100 -z-10 rounded"></div>
+        {['Empresa', 'Sede', 'Contrato', 'Turnos'].map((label, i) => {
+            const num = i + 1;
+            return (
+                <div key={num} className="flex flex-col items-center gap-2 bg-white px-2">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition-colors ${step >= num ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-slate-200 text-slate-300'}`}>
+                        {step > num ? <CheckCircle2 size={16}/> : num}
+                    </div>
+                    <span className="text-[10px] uppercase font-bold text-slate-400">{label}</span>
+                </div>
+            )
+        })}
       </div>
 
-      {step === 1 && (
-        <form onSubmit={handleCreateClient} className="space-y-4 animate-fadeIn">
-            <div className="border-b pb-4 mb-4">
-                <h2 className="text-xl font-bold text-gray-800">🏢 Paso 1: Datos de la Empresa</h2>
-                <p className="text-sm text-gray-500">Registre la razón social del cliente.</p>
-            </div>
-            <div><label className={labelClass}>Razón Social</label><input className={inputClass} value={clientData.businessName} onChange={e => setClientData({...clientData, businessName: e.target.value})} required placeholder="Ej: Banco Galicia S.A." /></div>
-            <div><label className={labelClass}>CUIT</label><input className={inputClass} value={clientData.cuit} onChange={e => setClientData({...clientData, cuit: e.target.value})} required placeholder="30-12345678-9" /></div>
-            <button type="submit" disabled={loading} className={btnClass}>{loading ? 'Guardando...' : 'Guardar y Continuar'}</button>
-        </form>
-      )}
+      <div className="min-h-[300px]">
+          {step === 1 && (
+            <form onSubmit={handleCreateClient} className="space-y-4 animate-fadeIn">
+                <h2 className="text-xl font-bold text-slate-800">Datos de la Empresa</h2>
+                <div><label className={labelClass}>Razón Social</label><input className={inputClass} value={clientData.businessName} onChange={e => setClientData({...clientData, businessName: e.target.value})} required autoFocus /></div>
+                <div><label className={labelClass}>CUIT</label><input className={inputClass} value={clientData.cuit} onChange={e => setClientData({...clientData, cuit: e.target.value})} required /></div>
+                <button type="submit" disabled={loading} className={btnClass}>{loading ? '...' : 'Siguiente'}</button>
+            </form>
+          )}
 
-      {step === 2 && (
-        <form onSubmit={handleCreateObjective} className="space-y-4 animate-fadeIn">
-            <div className="border-b pb-4 mb-4">
-                <h2 className="text-xl font-bold text-gray-800">📍 Paso 2: Crear Sede / Objetivo</h2>
-                <p className="text-sm text-gray-500">Defina la ubicación física del servicio.</p>
-            </div>
-            <div><label className={labelClass}>Nombre del Objetivo</label><input className={inputClass} value={objData.name} onChange={e => setObjData({...objData, name: e.target.value})} required placeholder="Ej: Sucursal Centro" /></div>
-            <div><label className={labelClass}>Dirección</label><input className={inputClass} value={objData.address} onChange={e => setObjData({...objData, address: e.target.value})} required /></div>
-            <div className="grid grid-cols-2 gap-4">
-                <div><label className={labelClass}>Latitud</label><input type="number" className={inputClass} value={objData.latitude} onChange={e => setObjData({...objData, latitude: e.target.value})} required step="any"/></div>
-                <div><label className={labelClass}>Longitud</label><input type="number" className={inputClass} value={objData.longitude} onChange={e => setObjData({...objData, longitude: e.target.value})} required step="any"/></div>
-            </div>
-            <button type="submit" disabled={loading} className={btnClass}>{loading ? 'Vinculando...' : 'Guardar y Continuar'}</button>
-        </form>
-      )}
-
-      {step === 3 && (
-        <form onSubmit={handleCreateContract} className="space-y-4 animate-fadeIn">
-            <div className="border-b pb-4 mb-4">
-                <h2 className="text-xl font-bold text-gray-800">📄 Paso 3: Definir Contrato</h2>
-                <p className="text-sm text-gray-500">Establezca el acuerdo comercial y horas vendidas.</p>
-            </div>
-            <div><label className={labelClass}>Nombre del Servicio</label><input className={inputClass} value={contractData.name} onChange={e => setContractData({...contractData, name: e.target.value})} placeholder="Ej: Seguridad 24hs - 2025" required /></div>
-            <div><label className={labelClass}>Horas Mensuales Vendidas</label><input type="number" className={inputClass} value={contractData.totalHoursPerMonth} onChange={e => setContractData({...contractData, totalHoursPerMonth: Number(e.target.value)})} required /></div>
-            <button type="submit" disabled={loading} className={btnClass}>{loading ? 'Generando...' : 'Generar Contrato'}</button>
-        </form>
-      )}
-
-      {step === 4 && (
-        <div className="space-y-6 animate-fadeIn">
-            <div className="text-center bg-green-50 p-4 rounded-lg border border-green-100">
-                <h2 className="text-xl font-bold text-green-800">¡Estructura Base Creada!</h2>
-                <p className="text-green-600 text-sm">Ahora define la "receta" de turnos (modalidades) para este contrato.</p>
-            </div>
-
-            <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 shadow-inner">
-                <h3 className="font-bold text-gray-700 mb-4 flex items-center">
-                    <span className="bg-indigo-100 text-indigo-700 w-6 h-6 rounded-full flex items-center justify-center text-xs mr-2">+</span>
-                    Agregar Nueva Modalidad
-                </h3>
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div><label className={labelClass}>Nombre</label><input className={inputClass} value={shiftData.name} onChange={e => setShiftData({...shiftData, name: e.target.value})} placeholder="Ej: Turno Tarde" /></div>
-                    <div><label className={labelClass}>Código</label><input className={inputClass} value={shiftData.code} onChange={e => setShiftData({...shiftData, code: e.target.value})} placeholder="TT" /></div>
-                    <div><label className={labelClass}>Inicio (HH:mm)</label><input type="time" className={inputClass} value={shiftData.startTime} onChange={e => setShiftData({...shiftData, startTime: e.target.value})} /></div>
-                    <div><label className={labelClass}>Duración (hs)</label><input type="number" className={inputClass} value={shiftData.durationHours} onChange={e => setShiftData({...shiftData, durationHours: Number(e.target.value)})} /></div>
+          {step === 2 && (
+            <form onSubmit={handleCreateObjective} className="space-y-4 animate-fadeIn">
+                <h2 className="text-xl font-bold text-slate-800">Ubicación del Servicio</h2>
+                <div><label className={labelClass}>Nombre Sede</label><input className={inputClass} value={objData.name} onChange={e => setObjData({...objData, name: e.target.value})} required /></div>
+                <div><label className={labelClass}>Dirección</label><input className={inputClass} value={objData.address} onChange={e => setObjData({...objData, address: e.target.value})} required /></div>
+                <div className="grid grid-cols-2 gap-4">
+                    <div><label className={labelClass}>Latitud</label><input type="number" className={inputClass} value={objData.latitude} onChange={e => setObjData({...objData, latitude: e.target.value})} step="any" required/></div>
+                    <div><label className={labelClass}>Longitud</label><input type="number" className={inputClass} value={objData.longitude} onChange={e => setObjData({...objData, longitude: e.target.value})} step="any" required/></div>
                 </div>
-                <button 
-                    onClick={handleCreateShiftType} 
-                    disabled={loading || !shiftData.name} 
-                    className="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition font-medium shadow-sm flex justify-center items-center"
-                >
-                    {loading ? 'Guardando...' : '+ Agregar Modalidad a la Lista'}
+                <button type="submit" disabled={loading} className={btnClass}>{loading ? '...' : 'Siguiente'}</button>
+            </form>
+          )}
+
+          {/* 🛑 PASO 3: CONFIGURACIÓN CRÍTICA DE FECHAS Y DÍAS */}
+          {step === 3 && (
+            <form onSubmit={handleCreateContract} className="space-y-5 animate-fadeIn">
+                <h2 className="text-xl font-bold text-slate-800">Definición del Acuerdo</h2>
+                
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="col-span-2"><label className={labelClass}>Nombre Servicio</label><input className={inputClass} value={contractData.name} onChange={e => setContractData({...contractData, name: e.target.value})} required /></div>
+                    <div><label className={labelClass}>Horas Mensuales (Vendidas)</label><input type="number" className={inputClass} value={contractData.totalHoursPerMonth} onChange={e => setContractData({...contractData, totalHoursPerMonth: +e.target.value})} required /></div>
+                </div>
+
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
+                    <div className="flex items-center gap-2 text-indigo-700 text-sm font-bold border-b border-slate-200 pb-2 mb-2">
+                        <Calendar size={16}/> Vigencia y Cobertura
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><label className={labelClass}>Fecha Inicio</label><input type="date" className={inputClass} value={contractData.startDate} onChange={e => setContractData({...contractData, startDate: e.target.value})} required /></div>
+                        <div><label className={labelClass}>Fecha Fin (Opcional)</label><input type="date" className={inputClass} value={contractData.endDate} onChange={e => setContractData({...contractData, endDate: e.target.value})} /></div>
+                    </div>
+                    
+                    <div>
+                        <label className={labelClass}>Días de Cobertura</label>
+                        <div className="flex justify-between mt-2">
+                            {['D','L','M','M','J','V','S'].map((day, i) => (
+                                <button 
+                                    key={i} 
+                                    type="button"
+                                    onClick={() => toggleDay(i)}
+                                    className={`w-9 h-9 rounded-lg text-xs font-bold transition-all ${contractData.daysOfWeek.includes(i) ? 'bg-indigo-600 text-white shadow-md scale-110' : 'bg-white border border-slate-200 text-slate-400'}`}
+                                >
+                                    {day}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" disabled={loading} className={btnClass}>{loading ? 'Guardando...' : 'Confirmar Configuración'}</button>
+            </form>
+          )}
+
+          {step === 4 && (
+            <div className="space-y-6 animate-fadeIn">
+                
+                {/* 🛑 CALCULADORA PREDICTIVA */}
+                <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl p-5 text-white shadow-lg relative overflow-hidden">
+                    <div className="relative z-10 flex justify-between items-center">
+                        <div>
+                            <p className="text-xs text-slate-400 font-bold uppercase flex items-center gap-2"><Calculator size={14}/> Proyección Mensual</p>
+                            <div className="mt-1 flex items-baseline gap-2">
+                                <span className={`text-2xl font-bold ${metrics.totalHours > contractData.totalHoursPerMonth ? 'text-red-400' : 'text-emerald-400'}`}>
+                                    {metrics.totalHours} hs
+                                </span>
+                                <span className="text-slate-500">/ {contractData.totalHoursPerMonth} hs</span>
+                            </div>
+                            <p className="text-xs text-slate-400 mt-1">
+                                {metrics.totalVacancies} Vacantes totales ({addedShifts.length} turnos x {metrics.totalVacancies / (addedShifts.length || 1)} días)
+                            </p>
+                        </div>
+                        {metrics.totalHours > contractData.totalHoursPerMonth && (
+                            <div className="bg-red-500/20 p-2 rounded-lg border border-red-500/50 text-red-300">
+                                <AlertTriangle size={20} />
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase">Agregar Modalidad</h3>
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                        <input className={inputClass} value={shiftData.name} onChange={e => setShiftData({...shiftData, name: e.target.value})} placeholder="Nombre (ej: Mañana)" />
+                        <input className={inputClass} value={shiftData.code} onChange={e => setShiftData({...shiftData, code: e.target.value})} placeholder="Código (ej: TM)" />
+                        <input type="time" className={inputClass} value={shiftData.startTime} onChange={e => setShiftData({...shiftData, startTime: e.target.value})} />
+                        <input type="number" className={inputClass} value={shiftData.durationHours} onChange={e => setShiftData({...shiftData, durationHours: +e.target.value})} placeholder="Horas" />
+                    </div>
+                    <button onClick={handleCreateShiftType} disabled={loading || !shiftData.name} className="w-full bg-slate-100 text-slate-700 py-2.5 rounded-lg hover:bg-slate-200 font-bold transition flex justify-center items-center gap-2 border border-slate-200">
+                        <Plus size={16}/> Agregar Turno
+                    </button>
+                </div>
+
+                {addedShifts.length > 0 && (
+                    <div className="space-y-2">
+                        {addedShifts.map((shift, i) => (
+                            <div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm">
+                                <span className="font-bold text-slate-700">{shift.name}</span>
+                                <span className="font-mono text-xs bg-white px-2 py-1 rounded border">{shift.startTime} ({shift.durationHours}h)</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+                
+                <button onClick={handleFinish} className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 font-bold shadow-md">
+                    Finalizar y Ver Planificador
                 </button>
             </div>
-
-            {/* LISTA VISUAL DE LO CARGADO */}
-            {addedShifts.length > 0 && (
-                <div className="border rounded-lg overflow-hidden shadow-sm">
-                    <div className="bg-gray-100 px-4 py-2 border-b font-semibold text-gray-700 text-sm flex justify-between items-center">
-                        <span>Modalidades Cargadas</span>
-                        <span className="bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full text-xs">{addedShifts.length}</span>
-                    </div>
-                    <ul className="divide-y divide-gray-100 bg-white">
-                        {addedShifts.map((shift, index) => (
-                            <li key={index} className="px-4 py-3 flex justify-between items-center text-sm hover:bg-gray-50">
-                                <div>
-                                    <span className="font-bold text-gray-800">{shift.name}</span>
-                                    <span className="ml-2 text-gray-500 font-mono text-xs">({shift.code})</span>
-                                </div>
-                                <div className="text-gray-600 bg-gray-100 px-2 py-1 rounded">
-                                    {shift.startTime} <span className="mx-1">•</span> {shift.durationHours}hs
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            )}
-            
-            <button onClick={handleFinish} className="w-full border border-gray-300 text-gray-700 py-3 rounded-lg hover:bg-gray-50 font-bold transition mt-4 shadow-sm">
-                Finalizar y Volver al Dashboard
-            </button>
-        </div>
-      )}
+          )}
+      </div>
     </div>
   );
 }
@@ -5937,474 +6489,505 @@ export default ObjectiveManagement;
 ================================================================================
 FILE: apps\web\src\components\admin\scheduler.tsx
 ================================================================================
-import React, { useState, useEffect, useRef } from 'react';
-import FullCalendar from '@fullcalendar/react';
-import dayGridPlugin from '@fullcalendar/daygrid';
-import timeGridPlugin from '@fullcalendar/timegrid';
-// Importación segura
-import interactionPlugin, { Draggable } from '@fullcalendar/interaction';
-
-import { Timestamp } from 'firebase/firestore';
-import toast from 'react-hot-toast';
+import React, { useReducer, useMemo, useEffect, useRef } from 'react';
 import { 
-    callScheduleShift, 
-    getObjectiveShifts, 
-    callManageEmployees,
-    getActiveContract,
-    callManageHierarchy,
-    updateShift,
-    deleteShift
-} from '@/services/firebase-client.service';
-import { IShiftType, IServiceContract } from '@/common/interfaces/client.interface';
-import { IEmployee } from '@/common/interfaces/employee.interface';
-import { useClient } from '@/context/ClientContext';
+  format, 
+  addMonths, 
+  subMonths, 
+  startOfMonth, 
+  endOfMonth, 
+  startOfWeek, 
+  endOfWeek, 
+  isSameMonth, 
+  isSameDay, 
+  addDays, 
+  parseISO, 
+  setHours, 
+  startOfDay, 
+  differenceInMinutes, 
+  isWithinInterval 
+} from 'date-fns';
+import { es } from 'date-fns/locale';
 import { 
-    Info, AlertTriangle, CheckCircle2, Clock, 
-    UserX, Trash2, RefreshCw, Copy, Clipboard, User
+  ChevronLeft, 
+  ChevronRight, 
+  Calendar as CalendarIcon, 
+  Clock, 
+  MoreHorizontal 
 } from 'lucide-react';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+// --- UTILIDADES DE ESTILO ---
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+// --- TIPOS Y ESTRUCTURAS DE DATOS ---
+
+export type ViewType = 'month' | 'week' | 'day';
+
+export interface SchedulerEvent {
+  id: string;
+  title: string;
+  description?: string;
+  start: Date | string;
+  end: Date | string;
+  color?: string;        // Clase CSS (ej: 'bg-blue-100') o Hex
+  originalData?: any;    // Payload original (IObjective, etc)
+}
+
+interface SchedulerState {
+  currentDate: Date;
+  view: ViewType;
+}
+
+type SchedulerAction = 
+  | { type: 'SET_VIEW'; payload: ViewType }
+  | { type: 'NAVIGATE_NEXT' }
+  | { type: 'NAVIGATE_PREV' }
+  | { type: 'NAVIGATE_TODAY' }
+  | { type: 'SET_DATE'; payload: Date };
 
 interface SchedulerProps {
-    objectiveId: string;
-    viewMode: 'timeline' | 'calendar';
+  events: SchedulerEvent[];
+  isLoading?: boolean;
+  onEventClick?: (event: SchedulerEvent) => void;
+  onDateChange?: (date: Date) => void;
+  onViewChange?: (view: ViewType) => void;
+  startHour?: number; // Configuración: Hora de inicio del día (0-23)
+  endHour?: number;   // Configuración: Hora de fin del día (0-23)
 }
 
-export function DragAndDropScheduler({ objectiveId, viewMode }: SchedulerProps) {
-  const { selectedClientId } = useClient();
-  
-  // Datos
-  const [employees, setEmployees] = useState<IEmployee[]>([]);
-  const [shifts, setShifts] = useState<any[]>([]);
-  const [shiftTypes, setShiftTypes] = useState<IShiftType[]>([]);
-  const [contract, setContract] = useState<IServiceContract | null>(null);
-  
-  // KPIs
-  const [contractHours, setContractHours] = useState(0);
-  const [assignedHours, setAssignedHours] = useState(0);
-  
-  // UI
-  const [loading, setLoading] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
-  
-  // Modales
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [isManageModalOpen, setIsManageModalOpen] = useState(false);
-  const [selectedEvent, setSelectedEvent] = useState<any>(null);
-  
-  // Acciones
-  const [isRotating, setIsRotating] = useState(false);
-  const [rotationEmployeeId, setRotationEmployeeId] = useState('');
-  const [copySourceDate, setCopySourceDate] = useState<Date | null>(null);
-  const [copySourceShifts, setCopySourceShifts] = useState<any[]>([]);
+// --- CONSTANTES ---
+const CELL_HEIGHT = 60; // Altura en píxeles de cada bloque de 1 hora
 
-  // Drag State
-  const [pendingDrop, setPendingDrop] = useState<{
-      employeeId: string;
-      employeeName: string;
-      targetDate: Date; // Usamos la fecha del drop, ignorando hora
-      calendarApi: any;
-      eventInstance: any;
-  } | null>(null);
-
-  const calendarRef = useRef<FullCalendar>(null);
-  const draggableRef = useRef<HTMLDivElement>(null);
-
-  // Colores
-  const getColorByStatus = (status: string, isVacancy: boolean) => {
-      if (isVacancy) return { bg: '#F3F4F6', border: '#9CA3AF', text: '#374151', pattern: true }; 
-      switch (status) {
-          case 'InProgress': return { bg: '#818CF8', border: '#4338ca', text: '#FFFFFF' };
-          case 'Completed': return { bg: '#10B981', border: '#059669', text: '#FFFFFF' };
-          case 'Canceled': return { bg: '#FECACA', border: '#EF4444', text: '#B91C1C' };
-          case 'Assigned': default: return { bg: '#3B82F6', border: '#2563EB', text: '#FFFFFF' };
-      }
-  };
-
-  // Configuración
-  useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 1024);
-    checkMobile(); 
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
-
-  useEffect(() => {
-      const calendarApi = calendarRef.current?.getApi();
-      if (calendarApi) {
-          if (viewMode === 'calendar') calendarApi.changeView('dayGridMonth');
-          else calendarApi.changeView(isMobile ? 'timeGridDay' : 'timeGridWeek');
-      }
-  }, [viewMode, isMobile]);
-
-  // Cargar Empleados
-  useEffect(() => {
-    async function loadEmployees() {
-        if (!selectedClientId) { setEmployees([]); return; }
-        try {
-            const empRes = await callManageEmployees({ action: 'GET_ALL_EMPLOYEES', payload: { clientId: selectedClientId } });
-            setEmployees((empRes.data as any).data || []);
-        } catch (e) { console.error(e); }
-    }
-    loadEmployees();
-  }, [selectedClientId]);
-
-  // Cargar Datos Objetivo
-  const refreshShifts = () => {
-    if (!objectiveId) { 
-        setShifts([]); setContract(null); setContractHours(0); setAssignedHours(0); return; 
-    }
-    setLoading(true);
+// --- REDUCER (CONTROL DE ESTADO Y PREVENCIÓN DE ERROR #185) ---
+// Extraemos la lógica de estado fuera del componente para garantizar estabilidad referencial
+const schedulerReducer = (state: SchedulerState, action: SchedulerAction): SchedulerState => {
+  switch (action.type) {
+    case 'SET_VIEW':
+      return { ...state, view: action.payload };
     
-    getActiveContract(objectiveId).then(async (c) => {
-        if (c) {
-            // Forzamos defaults
-            const safeContract = {
-                ...c,
-                quantity: c.quantity || 1, 
-                daysOfWeek: c.daysOfWeek || [0,1,2,3,4,5,6] 
-            } as unknown as IServiceContract;
-            setContract(safeContract); 
-            setContractHours(c.totalHours);
-            
-            try {
-                const typesRes = await callManageHierarchy({ action: 'GET_SHIFT_TYPES', payload: { contractId: c.id } });
-                setShiftTypes((typesRes.data as any).data || []);
-            } catch (e) { console.error(e); }
-        } else {
-            setContract(null); setContractHours(0); setShiftTypes([]);
-        }
-    });
+    case 'NAVIGATE_NEXT': {
+      const { view, currentDate } = state;
+      let nextDate: Date;
+      if (view === 'month') {
+        nextDate = addMonths(currentDate, 1);
+      } else if (view === 'week') {
+        nextDate = addDays(currentDate, 7);
+      } else {
+        nextDate = addDays(currentDate, 1);
+      }
+      return { ...state, currentDate: nextDate };
+    }
 
-    getObjectiveShifts(objectiveId).then((data) => {
-      let totalDuration = 0;
-      const calendarEvents = data.map(shift => {
-        const toDate = (t: any) => {
-            if (!t) return new Date();
-            if (typeof t.toDate === 'function') return t.toDate();
-            if (t.seconds) return new Date(t.seconds * 1000);
-            return new Date(t);
-        };
-        const start = toDate(shift.startTime);
-        const end = toDate(shift.endTime);
-        if (shift.status !== 'Canceled') totalDuration += (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    case 'NAVIGATE_PREV': {
+      const { view, currentDate } = state;
+      let prevDate: Date;
+      if (view === 'month') {
+        prevDate = subMonths(currentDate, 1);
+      } else if (view === 'week') {
+        prevDate = addDays(currentDate, -7);
+      } else {
+        prevDate = addDays(currentDate, -1);
+      }
+      return { ...state, currentDate: prevDate };
+    }
 
-        const isVacancy = !shift.employeeId || shift.employeeId === 'VACANTE';
-        const colors = getColorByStatus(shift.status, isVacancy);
+    case 'NAVIGATE_TODAY':
+      return { ...state, currentDate: new Date() };
 
-        return {
-            id: shift.id,
-            title: isVacancy ? '⚠️ VACANTE' : shift.employeeName,
-            start, end,
-            backgroundColor: colors.bg,
-            borderColor: colors.border,
-            textColor: colors.text,
-            classNames: [isVacancy ? 'striped-event' : '', shift.status === 'Canceled' ? 'canceled-event' : ''],
-            extendedProps: { ...shift, isVacancy }
-        };
-      });
-      setShifts(calendarEvents);
-      setAssignedHours(totalDuration);
-      setLoading(false);
-    });
-  };
+    case 'SET_DATE':
+      return { ...state, currentDate: action.payload };
 
-  useEffect(() => { refreshShifts(); }, [objectiveId]);
+    default:
+      return state;
+  }
+};
+
+// --- COMPONENTE PRINCIPAL ---
+
+const Scheduler: React.FC<SchedulerProps> = ({ 
+  events = [], 
+  isLoading = false, 
+  onEventClick, 
+  onDateChange,
+  onViewChange,
+  startHour = 0, 
+  endHour = 24 
+}) => {
+  
+  // 1. INICIALIZACIÓN DE ESTADO
+  const [state, dispatch] = useReducer(schedulerReducer, {
+    currentDate: new Date(),
+    view: 'month'
+  });
+
+  // 2. EFECTOS DE COMUNICACIÓN CON EL PADRE
+  useEffect(() => {
+    if (onDateChange) {
+      onDateChange(state.currentDate);
+    }
+  }, [state.currentDate, onDateChange]);
 
   useEffect(() => {
-    const draggableEl = draggableRef.current;
-    if (draggableEl) {
-      new Draggable(draggableEl, {
-        itemSelector: '.fc-event-external',
-        eventData: function(eventEl) {
-          return {
-            title: eventEl.getAttribute('data-name'),
-            extendedProps: {
-                employeeId: eventEl.getAttribute('data-id'),
-                employeeName: eventEl.getAttribute('data-name')
-            }
-          };
-        }
-      });
+    if (onViewChange) {
+      onViewChange(state.view);
     }
-  }, [employees]);
+  }, [state.view, onViewChange]);
 
-  // --- RENDERERS ---
+  // 3. NORMALIZACIÓN DE DATOS (MEMOIZADO)
+  // Convertimos strings ISO a objetos Date una sola vez por actualización de props
+  const normalizedEvents = useMemo(() => {
+    return events.map(evt => ({
+      ...evt,
+      start: typeof evt.start === 'string' ? parseISO(evt.start) : evt.start,
+      end: typeof evt.end === 'string' ? parseISO(evt.end) : evt.end,
+    }));
+  }, [events]);
 
-  const renderDayHeader = (arg: any) => {
-      return (
-          <div className="flex items-center justify-between px-2 w-full group">
-              <span className="font-bold text-slate-700">{arg.text}</span>
-              <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                  {copySourceDate ? (
-                      <button onClick={(e) => { e.stopPropagation(); handlePasteDay(arg.date); }} className="p-1 bg-indigo-600 text-white rounded hover:bg-indigo-700" title="Pegar aquí"><Clipboard size={12} /></button>
-                  ) : (
-                      <button onClick={(e) => { e.stopPropagation(); handleCopyDay(arg.date); }} className="p-1 bg-gray-100 text-gray-500 rounded hover:bg-gray-200 hover:text-indigo-600" title="Copiar día"><Copy size={12} /></button>
+  // 4. GENERADORES DE VISTAS
+
+  // --- SUB-RENDER: VISTA MENSUAL ---
+  const renderMonthView = () => {
+    const monthStart = startOfMonth(state.currentDate);
+    const monthEnd = endOfMonth(monthStart);
+    const startDate = startOfWeek(monthStart, { weekStartsOn: 1 }); // Semana empieza Lunes
+    const endDate = endOfWeek(monthEnd, { weekStartsOn: 1 });
+
+    const dateFormat = "d";
+    const rows = [];
+    let days = [];
+    let day = startDate;
+    let formattedDate = "";
+
+    // Loop para generar todas las semanas necesarias
+    while (day <= endDate) {
+      for (let i = 0; i < 7; i++) {
+        formattedDate = format(day, dateFormat);
+        const cloneDay = day;
+        
+        // Filtramos eventos de este día específico
+        const dayEvents = normalizedEvents.filter(e => isSameDay(e.start as Date, cloneDay));
+        const isCurrentMonth = isSameMonth(day, monthStart);
+        const isToday = isSameDay(day, new Date());
+
+        days.push(
+          <div
+            key={day.toISOString()}
+            className={cn(
+              "min-h-[120px] border-b border-r border-gray-200 p-2 transition-colors relative flex flex-col group hover:bg-gray-50/50",
+              !isCurrentMonth ? "bg-gray-50/30 text-gray-400" : "bg-white",
+              isToday ? "bg-blue-50/20" : ""
+            )}
+            onClick={() => dispatch({ type: 'SET_DATE', payload: cloneDay })} // Click en celda va al día
+          >
+            {/* Número del día */}
+            <div className="flex justify-between items-start mb-1">
+               <span className={cn(
+                 "text-sm font-semibold w-7 h-7 flex items-center justify-center rounded-full transition-all",
+                 isToday 
+                   ? "bg-blue-600 text-white shadow-md scale-110" 
+                   : "text-gray-700 group-hover:bg-gray-200"
+               )}>
+                 {formattedDate}
+               </span>
+            </div>
+
+            {/* Lista de Eventos (Máximo 3 visibles + indicador) */}
+            <div className="flex-1 flex flex-col gap-1 overflow-hidden">
+              {dayEvents.slice(0, 3).map((evt) => (
+                <div
+                  key={evt.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onEventClick) onEventClick(evt);
+                  }}
+                  className={cn(
+                    "px-2 py-1 text-xs rounded border-l-2 truncate cursor-pointer shadow-sm hover:brightness-95 transition-all",
+                    evt.color || "bg-blue-100 border-blue-500 text-blue-800"
                   )}
-              </div>
-          </div>
-      );
-  };
-
-  const renderDayCell = (arg: any) => {
-      if (arg.view.type !== 'dayGridMonth') return null;
-      const date = arg.date;
-      const dayOfWeek = date.getDay();
-      if (!contract) return null;
-      const requiredQuantity = contract.quantity || 1;
-      const requiredDays = contract.daysOfWeek || [0,1,2,3,4,5,6];
-      if (!requiredDays.includes(dayOfWeek)) return <div className="absolute inset-0 bg-gray-100/30 pointer-events-none" />;
-
-      const shiftsToday = shifts.filter(s => {
-          const shiftDate = new Date(s.start);
-          return shiftDate.getDate() === date.getDate() &&
-                 shiftDate.getMonth() === date.getMonth() &&
-                 shiftDate.getFullYear() === date.getFullYear() &&
-                 s.extendedProps.status !== 'Canceled' && !s.extendedProps.isVacancy;
-      });
-      const missing = requiredQuantity - shiftsToday.length;
-
-      return (
-          <div className="absolute bottom-1 left-0 right-0 px-2 pointer-events-none">
-              {missing > 0 ? (
-                  <div className="bg-red-50 border border-red-200 text-red-700 text-[10px] font-bold py-0.5 px-1 rounded flex items-center justify-center gap-1 shadow-sm">
-                      <AlertTriangle size={10} /> Falta cubrir: {missing}
-                  </div>
-              ) : (
-                  <div className="flex justify-end"><div className="bg-green-100 text-green-700 p-0.5 rounded-full border border-green-200"><CheckCircle2 size={12} /></div></div>
+                  title={evt.title}
+                >
+                  <span className="font-bold mr-1">{format(evt.start as Date, 'HH:mm')}</span>
+                  {evt.title}
+                </div>
+              ))}
+              
+              {/* Indicador de "Ver más" */}
+              {dayEvents.length > 3 && (
+                <div 
+                  className="text-[10px] text-gray-500 font-medium pl-1 hover:text-blue-600 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dispatch({ type: 'SET_VIEW', payload: 'day' });
+                    dispatch({ type: 'SET_DATE', payload: cloneDay });
+                  }}
+                >
+                  +{dayEvents.length - 3} más...
+                </div>
               )}
+            </div>
           </div>
+        );
+        day = addDays(day, 1);
+      }
+      rows.push(
+        <div className="grid grid-cols-7" key={day.toISOString()}>
+          {days}
+        </div>
       );
-  };
-
-  const renderEventContent = (arg: any) => {
-      const isVacancy = arg.event.title === 'Vacante';
-      return (
-          <div className={`w-full h-full px-1 py-0.5 flex flex-col justify-center overflow-hidden text-[10px] leading-tight ${isVacancy ? 'italic' : ''}`}>
-              <div className="font-bold truncate">{arg.event.title}</div>
-              {!isMobile && arg.view.type !== 'dayGridMonth' && ( <div className="opacity-90">{arg.timeText}</div> )}
-          </div>
-      );
-  };
-
-  // --- HANDLERS ---
-  const handleEventReceive = (info: any) => {
-    if (!objectiveId) { toast.error("Seleccione un objetivo."); info.revert(); return; }
-    const { employeeId, employeeName } = info.event.extendedProps;
-    setPendingDrop({ 
-        employeeId, employeeName, targetDate: info.event.start, // 🛑 FIX: Guardamos targetDate
-        calendarApi: info, eventInstance: info.event 
-    });
-    setIsCreateModalOpen(true);
-  };
-
-  const handleConfirmAssignment = async (shiftType: IShiftType) => {
-    if (!pendingDrop) return;
-    setIsCreateModalOpen(false);
-    
-    // 🛑 FIX: Usamos la fecha del drop y la hora de la modalidad
-    const startDate = new Date(pendingDrop.targetDate);
-    const [h, m] = shiftType.startTime.split(':').map(Number);
-    startDate.setHours(h, m, 0, 0);
-    
-    const endDate = new Date(startDate);
-    endDate.setHours(startDate.getHours() + shiftType.durationHours);
-    
-    const toastId = toast.loading(`Asignando...`);
-    try {
-        await callScheduleShift({
-            employeeId: pendingDrop.employeeId,
-            employeeName: pendingDrop.employeeName,
-            objectiveId: objectiveId,
-            objectiveName: 'Sede', 
-            startTime: Timestamp.fromDate(startDate),
-            endTime: Timestamp.fromDate(endDate),
-            shiftTypeId: shiftType.id,
-            role: shiftType.requiredRole || 'Vigilador'
-        });
-        toast.success("Asignado", { id: toastId });
-        pendingDrop.eventInstance.remove(); 
-        refreshShifts();
-    } catch (e: any) {
-        toast.error(e.message, { id: toastId });
-        pendingDrop.calendarApi.revert();
-    } finally { setPendingDrop(null); }
-  };
-
-  const handleCopyDay = (date: Date) => {
-      const shiftsToCopy = shifts.filter(s => {
-          const sDate = s.start;
-          return sDate.getDate() === date.getDate() && 
-                 sDate.getMonth() === date.getMonth() && 
-                 sDate.getFullYear() === date.getFullYear();
-      });
-      if (shiftsToCopy.length === 0) { toast.error("Nada para copiar."); return; }
-      setCopySourceDate(date); setCopySourceShifts(shiftsToCopy);
-      toast.success(`Copiados ${shiftsToCopy.length} turnos.`, { icon: '📋' });
-  };
-
-  const handlePasteDay = async (targetDate: Date) => {
-      if (!copySourceDate || copySourceShifts.length === 0) return;
-      const toastId = toast.loading("Pegando...");
-      const promises = copySourceShifts.map(s => {
-          const originalStart = s.start;
-          const originalEnd = s.end;
-          const newStart = new Date(targetDate);
-          newStart.setHours(originalStart.getHours(), originalStart.getMinutes());
-          const duration = originalEnd.getTime() - originalStart.getTime();
-          const newEnd = new Date(newStart.getTime() + duration);
-
-          return callScheduleShift({
-              employeeId: s.extendedProps.employeeId,
-              employeeName: s.extendedProps.employeeName,
-              objectiveId, objectiveName: 'Sede',
-              startTime: Timestamp.fromDate(newStart), endTime: Timestamp.fromDate(newEnd),
-              shiftTypeId: s.extendedProps.shiftTypeId || 'manual', role: s.extendedProps.role || 'Vigilador'
-          });
-      });
-      try { await Promise.all(promises); toast.success("Pegado", { id: toastId }); setCopySourceDate(null); setCopySourceShifts([]); refreshShifts(); } catch (e: any) { toast.error(e.message, { id: toastId }); }
-  };
-
-  const handleEventDrop = async (info: any) => {
-    const { event } = info;
-    if (info.jsEvent.altKey) {
-        info.revert(); 
-        const toastId = toast.loading("Clonando...");
-        try {
-            await callScheduleShift({
-                employeeId: event.extendedProps.employeeId, employeeName: event.extendedProps.employeeName,
-                objectiveId, objectiveName: 'Sede',
-                startTime: Timestamp.fromDate(event.start), endTime: Timestamp.fromDate(event.end),
-                shiftTypeId: event.extendedProps.shiftTypeId, role: event.extendedProps.role
-            });
-            toast.success("Duplicado", { id: toastId }); refreshShifts(); 
-        } catch (e: any) { toast.error(e.message, { id: toastId }); }
-    } else {
-        const toastId = toast.loading("Moviendo...");
-        try { await updateShift(event.id, { startTime: event.start, endTime: event.end }); toast.success("Movido", { id: toastId }); refreshShifts(); } catch (e: any) { toast.error(e.message, { id: toastId }); info.revert(); }
+      days = [];
     }
+    
+    return (
+      <div className="flex flex-col h-full bg-white border-l border-t border-gray-200">
+        {/* Cabecera de días de la semana */}
+        <div className="grid grid-cols-7 border-b border-gray-200 bg-gray-50 sticky top-0 z-10">
+           {['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map((d) => (
+             <div key={d} className="py-2 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">
+               {d}
+             </div>
+           ))}
+        </div>
+        <div className="flex-1 overflow-y-auto">
+           {rows}
+        </div>
+      </div>
+    );
   };
 
-  const handleEventResize = async (info: any) => {
-      const { event } = info;
-      const toastId = toast.loading("Ajustando...");
-      try { await updateShift(event.id, { startTime: event.start, endTime: event.end }); toast.success("Ajustado", { id: toastId }); refreshShifts(); } catch (e: any) { toast.error(e.message, { id: toastId }); info.revert(); }
-  };
+  // --- SUB-RENDER: VISTA TIME GRID (SEMANA Y DÍA) ---
+  // Esta función maneja la lógica compleja de posicionamiento absoluto por hora
+  const renderTimeGrid = () => {
+    let daysToShow: Date[] = [];
+    
+    // Determinar qué días mostrar
+    if (state.view === 'week') {
+      const start = startOfWeek(state.currentDate, { weekStartsOn: 1 });
+      daysToShow = Array.from({ length: 7 }).map((_, i) => addDays(start, i));
+    } else {
+      daysToShow = [state.currentDate];
+    }
 
-  const handleEventClick = (info: any) => {
-      const event = info.event;
-      setSelectedEvent({ id: event.id, title: event.title, start: event.start, end: event.end, extendedProps: event.extendedProps });
-      setIsRotating(false); setRotationEmployeeId(''); setIsManageModalOpen(true);
-  };
+    // Array de horas configuradas (ej: 0 a 23)
+    const hours = Array.from({ length: endHour - startHour }).map((_, i) => startHour + i);
 
-  const handleDelete = async () => {
-      if (!selectedEvent) return;
-      if (!confirm("¿Borrar?")) return;
-      const toastId = toast.loading("Eliminando...");
-      try { await deleteShift(selectedEvent.id); toast.success("Eliminado", { id: toastId }); setIsManageModalOpen(false); refreshShifts(); } catch (e: any) { toast.error(e.message, { id: toastId }); }
-  };
-  const handleMarkCanceled = async () => {
-    if (!selectedEvent) return;
-    try { await updateShift(selectedEvent.id, { status: 'Canceled' }); toast.success("Cancelado"); setIsManageModalOpen(false); refreshShifts(); } catch (e: any) { toast.error(e.message); }
-  };
-  const handleRotate = async () => {
-      if (!selectedEvent || !rotationEmployeeId) return;
-      const emp = employees.find(e => e.uid === rotationEmployeeId);
-      if (!emp) return;
-      try { await updateShift(selectedEvent.id, { employeeId: emp.uid, employeeName: emp.name, status: 'Assigned' }); toast.success(`Rotado`); setIsManageModalOpen(false); refreshShifts(); } catch (e: any) { toast.error(e.message); }
-  };
+    return (
+      <div className="flex flex-col h-full bg-white relative">
+        
+        {/* CABECERA DE LA GRILLA (DÍAS) */}
+        <div className="flex border-b border-gray-200 bg-white sticky top-0 z-20 shadow-sm ml-16">
+          {daysToShow.map((day) => {
+            const isToday = isSameDay(day, new Date());
+            return (
+              <div key={day.toISOString()} className="flex-1 py-3 text-center border-r border-gray-100 last:border-r-0">
+                <div className={cn("text-xs uppercase font-bold mb-1", isToday ? "text-blue-600" : "text-gray-500")}>
+                  {format(day, 'EEE', { locale: es })}
+                </div>
+                <div className={cn(
+                  "inline-flex items-center justify-center w-8 h-8 rounded-full text-lg font-bold transition-all",
+                  isToday ? "bg-blue-600 text-white shadow-lg scale-110" : "text-gray-900"
+                )}>
+                  {format(day, 'd')}
+                </div>
+              </div>
+            );
+          })}
+        </div>
 
-  const coveragePercent = contractHours > 0 ? Math.min((assignedHours / contractHours) * 100, 100) : 0;
+        {/* CUERPO DE LA GRILLA (SCROLLABLE) */}
+        <div className="flex-1 overflow-y-auto relative flex">
+          
+          {/* COLUMNA DE HORAS (IZQUIERDA) */}
+          <div className="w-16 flex-shrink-0 bg-gray-50 border-r border-gray-200 sticky left-0 z-10">
+            {hours.map((hour) => (
+              <div 
+                key={hour} 
+                className="border-b border-gray-100 text-xs text-gray-400 text-right pr-2 pt-1 relative"
+                style={{ height: `${CELL_HEIGHT}px` }}
+              >
+                <span className="-top-3 relative block">
+                  {format(setHours(new Date(), hour), 'HH:mm')}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* COLUMNAS DE DÍAS Y EVENTOS */}
+          <div className="flex-1 flex relative min-w-[600px]">
+            
+            {/* LÍNEAS DE FONDO (GRID LINES) */}
+            <div className="absolute inset-0 flex flex-col z-0">
+               {hours.map((h) => (
+                 <div key={h} className="w-full border-b border-gray-100" style={{ height: `${CELL_HEIGHT}px` }}></div>
+               ))}
+            </div>
+
+            {/* COLUMNAS POR DÍA */}
+            {daysToShow.map((day, dayIndex) => {
+              const isToday = isSameDay(day, new Date());
+              const dayEvents = normalizedEvents.filter(e => isSameDay(e.start as Date, day));
+
+              return (
+                <div key={day.toISOString()} className="flex-1 border-r border-gray-100 relative h-full group z-10">
+                  
+                  {/* INDICADOR DE HORA ACTUAL (SOLO HOY) */}
+                  {isToday && (
+                    <div 
+                      className="absolute w-full border-t-2 border-red-500 z-20 pointer-events-none opacity-80"
+                      style={{ 
+                        top: (() => {
+                          const now = new Date();
+                          const hours = now.getHours();
+                          const minutes = now.getMinutes();
+                          // Si la hora actual está fuera del rango visible, no mostramos o ajustamos
+                          if (hours < startHour || hours >= endHour) return -100;
+                          
+                          const minutesSinceStart = (hours - startHour) * 60 + minutes;
+                          return (minutesSinceStart / 60) * CELL_HEIGHT;
+                        })()
+                      }}
+                    >
+                      <div className="w-2 h-2 bg-red-500 rounded-full -mt-1 -ml-1"></div>
+                    </div>
+                  )}
+
+                  {/* EVENTOS DEL DÍA */}
+                  {dayEvents.map((evt) => {
+                    const start = evt.start as Date;
+                    const end = evt.end as Date;
+                    
+                    // Cálculos Matemáticos de Posición
+                    const startHourVal = start.getHours();
+                    const startMinVal = start.getMinutes();
+                    
+                    // Si el evento empieza antes del startHour configurado, lo cortamos visualmente (o ajustamos)
+                    // Para simplificar, asumimos que se renderiza relativo al startHour
+                    const minutesFromTop = (startHourVal - startHour) * 60 + startMinVal;
+                    const topPixels = (minutesFromTop / 60) * CELL_HEIGHT;
+                    
+                    const durationMinutes = differenceInMinutes(end, start);
+                    const heightPixels = (durationMinutes / 60) * CELL_HEIGHT;
+
+                    return (
+                      <div
+                        key={evt.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onEventClick) onEventClick(evt);
+                        }}
+                        className={cn(
+                          "absolute left-1 right-1 rounded border-l-4 p-1.5 shadow-md cursor-pointer hover:brightness-95 hover:z-30 transition-all overflow-hidden",
+                          evt.color || "bg-blue-100 border-blue-600 text-blue-900"
+                        )}
+                        style={{
+                          top: `${topPixels}px`,
+                          height: `${Math.max(heightPixels, 20)}px`, // Altura mínima de 20px
+                        }}
+                      >
+                        <div className="font-bold text-xs truncate leading-tight">{evt.title}</div>
+                        <div className="text-[10px] opacity-80 flex items-center gap-1 mt-0.5">
+                           <Clock size={10} />
+                           {format(start, 'HH:mm')} - {format(end, 'HH:mm')}
+                        </div>
+                        {evt.description && heightPixels > 40 && (
+                          <div className="text-[10px] opacity-70 mt-1 line-clamp-2 leading-tight">
+                            {evt.description}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="flex flex-col lg:flex-row h-full relative bg-slate-50">
-        <div className={`w-full lg:w-60 bg-white border-r p-3 flex flex-col ${isMobile ? 'hidden' : 'flex'}`} ref={draggableRef}>
-            <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Plantilla</h4>
-            <div className="flex-1 overflow-y-auto space-y-2">
-                {employees.map(emp => (
-                    <div key={emp.uid} data-id={emp.uid} data-name={emp.name} className="fc-event-external p-2 bg-white border rounded shadow-sm cursor-grab hover:border-indigo-500 flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-600">{emp.name.charAt(0)}</div>
-                        <span className="text-sm truncate">{emp.name}</span>
-                    </div>
-                ))}
-            </div>
+    <div className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden font-sans">
+      
+      {/* --- BARRA DE HERRAMIENTAS SUPERIOR --- */}
+      <header className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
+        
+        {/* Título y Navegación */}
+        <div className="flex items-center gap-6">
+          <h2 className="text-2xl font-bold text-gray-800 capitalize min-w-[200px]">
+            {format(state.currentDate, 'MMMM yyyy', { locale: es })}
+          </h2>
+          
+          <div className="flex items-center bg-gray-100 rounded-lg p-1 gap-0.5 shadow-inner">
+            <button 
+              onClick={() => dispatch({ type: 'NAVIGATE_PREV' })}
+              className="p-1.5 hover:bg-white hover:shadow rounded-md text-gray-600 transition-all"
+              title="Anterior"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => dispatch({ type: 'NAVIGATE_TODAY' })}
+              className="px-4 py-1.5 text-sm font-semibold text-gray-700 hover:bg-white hover:shadow rounded-md transition-all mx-1"
+            >
+              Hoy
+            </button>
+            <button 
+              onClick={() => dispatch({ type: 'NAVIGATE_NEXT' })}
+              className="p-1.5 hover:bg-white hover:shadow rounded-md text-gray-600 transition-all"
+              title="Siguiente"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 p-2 relative bg-white">
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 bg-white/90 backdrop-blur px-4 py-1 rounded-full shadow border flex items-center gap-3">
-                <div className="flex items-center gap-1 text-xs text-slate-600"><Clock size={12}/><span className="font-bold">{assignedHours.toFixed(0)}</span>/{contractHours}h</div>
-                <div className="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden"><div className={`h-full transition-all duration-500 ${coveragePercent >= 100 ? 'bg-green-500' : 'bg-blue-500'}`} style={{ width: `${coveragePercent}%` }} /></div>
+        {/* Selector de Vistas y Loading */}
+        <div className="flex items-center gap-4">
+          {isLoading && (
+            <div className="flex items-center gap-2 text-sm text-blue-600 font-medium animate-pulse bg-blue-50 px-3 py-1 rounded-full">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+              </span>
+              Sincronizando...
             </div>
-            {copySourceDate && (
-                <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white px-4 py-2 rounded-full shadow-lg text-sm flex items-center gap-2 animate-bounce cursor-pointer" onClick={() => setCopySourceDate(null)}>
-                    <Clipboard size={16} /> Selecciona día para pegar <button className="ml-2 opacity-50 hover:opacity-100">✕</button>
-                </div>
-            )}
-            <FullCalendar
-                ref={calendarRef}
-                plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-                initialView="dayGridMonth"
-                headerToolbar={false}
-                slotMinTime="06:00:00"
-                slotMaxTime="22:00:00"
-                height="100%"
-                locale="es"
-                editable={true}
-                droppable={true}
-                events={shifts}
-                eventReceive={handleEventReceive}
-                eventDrop={handleEventDrop}
-                eventResize={handleEventResize}
-                eventClick={handleEventClick}
-                dayHeaderContent={renderDayHeader}
-                dayCellContent={renderDayCell} 
-                eventContent={renderEventContent}
-            />
+          )}
+          
+          <div className="flex bg-gray-100 rounded-lg p-1 shadow-inner">
+            {(['month', 'week', 'day'] as ViewType[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => dispatch({ type: 'SET_VIEW', payload: v })}
+                className={cn(
+                  "px-4 py-1.5 text-sm font-medium rounded-md capitalize transition-all focus:outline-none",
+                  state.view === v 
+                    ? "bg-white text-blue-600 shadow-sm ring-1 ring-black/5" 
+                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-200/50"
+                )}
+              >
+                {v === 'month' ? 'Mes' : v === 'week' ? 'Semana' : 'Día'}
+              </button>
+            ))}
+          </div>
         </div>
+      </header>
 
-        {/* MODALES REUTILIZADOS (Crear y Gestionar) */}
-        {/* ... (Mantén el código de los modales de la versión anterior, es el mismo) ... */}
-        {isCreateModalOpen && (
-             <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/30 backdrop-blur-[2px]">
-                <div className="bg-white p-5 rounded-xl shadow-2xl max-w-xs w-full">
-                    <h3 className="font-bold text-slate-800 mb-3">Asignar a {pendingDrop?.employeeName}</h3>
-                    <div className="space-y-2 mb-4 max-h-60 overflow-y-auto">
-                        {shiftTypes.map(type => (
-                            <button key={type.id} onClick={() => handleConfirmAssignment(type)} className="w-full flex justify-between p-2 rounded border hover:bg-indigo-50 text-sm text-left">
-                                <span className="font-bold">{type.name}</span>
-                                <span className="text-xs bg-gray-100 px-1 rounded">{type.durationHours}h</span>
-                            </button>
-                        ))}
-                        <button onClick={() => handleConfirmAssignment({ id: 'std', name: 'Manual 8hs', code: 'STD', startTime: '08:00', durationHours: 8 } as any)} className="w-full text-center text-xs text-slate-400 mt-2 hover:underline">Manual 8hs</button>
-                    </div>
-                    <button onClick={() => { setIsCreateModalOpen(false); pendingDrop?.calendarApi.revert(); }} className="w-full py-2 text-slate-500 text-sm rounded hover:bg-gray-50">Cancelar</button>
-                </div>
-             </div>
-        )}
+      {/* --- ÁREA DE CONTENIDO PRINCIPAL --- */}
+      <div className="flex-1 overflow-hidden relative">
+        {state.view === 'month' ? renderMonthView() : renderTimeGrid()}
+      </div>
 
-        {isManageModalOpen && selectedEvent && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/30 backdrop-blur-[2px]">
-                <div className="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
-                    <div className="flex justify-between mb-4">
-                        <h3 className="text-lg font-bold">{selectedEvent.title}</h3>
-                        <button onClick={() => setIsManageModalOpen(false)} className="text-gray-400">✕</button>
-                    </div>
-                    <div className="space-y-3">
-                        {!isRotating ? (
-                            <button onClick={() => setIsRotating(true)} className="w-full flex justify-center gap-2 py-2 border rounded text-sm hover:bg-gray-50"><RefreshCw size={16} /> Rotar Personal</button>
-                        ) : (
-                            <div className="bg-slate-50 p-3 rounded border">
-                                <select className="w-full border p-1 rounded text-sm mb-2" value={rotationEmployeeId} onChange={e => setRotationEmployeeId(e.target.value)}><option value="">Elegir...</option>{employees.map(e => <option key={e.uid} value={e.uid}>{e.name}</option>)}</select>
-                                <div className="flex gap-2"><button onClick={() => setIsRotating(false)} className="flex-1 text-xs">Cancelar</button><button onClick={handleRotate} disabled={!rotationEmployeeId} className="flex-1 bg-indigo-600 text-white rounded text-xs py-1">OK</button></div>
-                            </div>
-                        )}
-                        <button onClick={handleMarkCanceled} className="w-full flex justify-center gap-2 py-2 border border-red-100 text-red-600 rounded text-sm hover:bg-red-50"><UserX size={16}/> Cancelar</button>
-                        <button onClick={handleDelete} className="w-full flex justify-center gap-2 py-2 bg-red-600 text-white rounded text-sm hover:bg-red-700"><Trash2 size={16}/> Eliminar</button>
-                    </div>
-                </div>
-            </div>
-        )}
     </div>
   );
-}
+};
+
+// Exportación Nombrada requerida por tu dashboard.tsx
+export const DragAndDropScheduler = React.memo(Scheduler);
+export default DragAndDropScheduler;
 
 ================================================================================
 FILE: apps\web\src\components\admin\shift-assignment-form.tsx
@@ -8557,8 +9140,11 @@ FILE: package.json
   "author": "Vale - Senior Tech Lead",
   "license": "ISC",
   "dependencies": {
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
     "firebase-admin": "^13.6.0",
-    "lucide-react": "^0.555.0"
+    "lucide-react": "^0.555.0",
+    "tailwind-merge": "^3.4.0"
   }
 }
 

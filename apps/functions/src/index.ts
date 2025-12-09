@@ -71,7 +71,7 @@ export const createUser = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 2. MOTOR DE AGENDAMIENTO (CREAR TURNOS)
+// 2. MOTOR DE AGENDAMIENTO (CREAR TURNOS INDIVIDUALES)
 // =========================================================
 export const scheduleShift = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -92,7 +92,7 @@ export const scheduleShift = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 10. GESTIÓN DE TURNOS (EDITAR / ELIMINAR / REPLICAR)
+// 3. GESTIÓN DE TURNOS (EDITAR / ELIMINAR / REPLICAR)
 // =========================================================
 export const manageShifts = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -117,7 +117,7 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
         await schedulingService.deleteShift(payload.id);
         return { success: true, message: 'Turno eliminado.' };
       
-      // 🛑 NUEVA LÓGICA: Replicación Masiva
+      // 🛑 REPLICACIÓN MASIVA (Clonar estructura)
       case 'REPLICATE_STRUCTURE':
         if (!payload.objectiveId || !payload.sourceDate || !payload.targetStartDate || !payload.targetEndDate) {
             throw new functions.https.HttpsError('invalid-argument', 'Faltan fechas para replicar.');
@@ -147,7 +147,7 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 3. AUDITORÍA (GEOFENCING & MANUAL OVERRIDE)
+// 4. AUDITORÍA (GEOFENCING & MANUAL OVERRIDE)
 // =========================================================
 export const auditShift = functions.https.onCall(async (data, context) => {
   if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Requiere autenticación.');
@@ -176,7 +176,7 @@ export const auditShift = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 4. GESTIÓN DE DATOS BÁSICOS
+// 5. GESTIÓN DE DATOS BÁSICOS
 // =========================================================
 export const manageData = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -202,7 +202,7 @@ export const manageData = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 5. GESTIÓN DE JERARQUÍA COMERCIAL (CLIENTES, OBJETIVOS, SERVICIOS)
+// 6. GESTIÓN DE JERARQUÍA COMERCIAL
 // =========================================================
 export const manageHierarchy = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -224,7 +224,7 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
           return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
 
-      // Objetivos
+      // Objetivos (Edición/Borrado)
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
       case 'UPDATE_OBJECTIVE': 
           await clientService.updateObjective(payload.id, payload.data);
@@ -260,7 +260,7 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 6. GESTIÓN DE EMPLEADOS (RRHH)
+// 7. GESTIÓN DE EMPLEADOS (RRHH)
 // =========================================================
 export const manageEmployees = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -292,7 +292,7 @@ export const manageEmployees = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 7. GESTIÓN DE USUARIOS DEL SISTEMA (ADMINS)
+// 8. GESTIÓN DE USUARIOS DEL SISTEMA (ADMINS)
 // =========================================================
 export const manageSystemUsers = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -330,7 +330,7 @@ export const manageSystemUsers = functions.https.onCall(async (data, context) =>
 });
 
 // =========================================================
-// 8. GESTIÓN DE NOVEDADES (AUSENCIAS)
+// 9. GESTIÓN DE NOVEDADES (AUSENCIAS)
 // =========================================================
 export const manageAbsences = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -368,7 +368,7 @@ export const manageAbsences = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 11. GESTIÓN DE PATRONES DE SERVICIO (AUTOMATIZACIÓN)
+// 10. GESTIÓN DE PATRONES DE SERVICIO (AUTOMATIZACIÓN)
 // =========================================================
 export const managePatterns = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -382,9 +382,17 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
     const patternService = await getService(PatternService);
 
     switch(action) {
-        case 'CREATE_PATTERN': return patternService.createPattern(payload, callerAuth.uid);
-        case 'GET_PATTERNS': return patternService.getPatternsByContract(payload.contractId);
-        case 'DELETE_PATTERN': await patternService.deletePattern(payload.id); return { success: true };
+        case 'CREATE_PATTERN': 
+            return patternService.createPattern(payload, callerAuth.uid);
+        
+        case 'GET_PATTERNS': 
+            return patternService.getPatternsByContract(payload.contractId);
+        
+        case 'DELETE_PATTERN': 
+            await patternService.deletePattern(payload.id); 
+            return { success: true };
+        
+        // Generar estructura (Crear vacantes)
         case 'GENERATE_VACANCIES': 
             return patternService.generateVacancies(
                 payload.contractId, 
@@ -392,6 +400,15 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
                 payload.year, 
                 payload.objectiveId 
             );
+        
+        // 🛑 NUEVO: Borrar estructura (Eliminar vacantes)
+        case 'CLEAR_VACANCIES':
+            return patternService.clearVacancies(
+                payload.objectiveId,
+                payload.month,
+                payload.year
+            );
+
         default: throw new functions.https.HttpsError('invalid-argument', 'Acción inválida');
     }
   } catch (error: any) {
@@ -401,7 +418,7 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 9. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
+// 11. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
 // =========================================================
 export const checkSystemHealth = functions.https.onCall(async (data, context) => {
   if (!context.auth) {

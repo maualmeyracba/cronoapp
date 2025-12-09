@@ -13,6 +13,7 @@ const shift_overlap_service_1 = require("./shift-overlap.service");
 const workload_service_1 = require("./workload.service");
 const audit_service_1 = require("./audit.service");
 const geofencing_service_1 = require("./geofencing.service");
+const pattern_service_1 = require("./pattern.service");
 const data_management_module_1 = require("../data-management/data-management.module");
 let SchedulingModule = class SchedulingModule {
 };
@@ -27,12 +28,14 @@ exports.SchedulingModule = SchedulingModule = __decorate([
             shift_overlap_service_1.ShiftOverlapService,
             workload_service_1.WorkloadService,
             audit_service_1.AuditService,
-            geofencing_service_1.GeofencingService
+            geofencing_service_1.GeofencingService,
+            pattern_service_1.PatternService
         ],
         exports: [
             scheduling_service_1.SchedulingService,
             workload_service_1.WorkloadService,
-            audit_service_1.AuditService
+            audit_service_1.AuditService,
+            pattern_service_1.PatternService
         ],
     })
 ], SchedulingModule);

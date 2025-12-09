@@ -4,25 +4,29 @@ import { ShiftOverlapService } from './shift-overlap.service';
 import { WorkloadService } from './workload.service';
 import { AuditService } from './audit.service';
 import { GeofencingService } from './geofencing.service';
-// Importamos el módulo de datos
+// 1. Importar PatternService
+import { PatternService } from './pattern.service'; 
 import { DataManagementModule } from '../data-management/data-management.module';
 
 @Module({
   imports: [
-    // 🛑 FIX: Usamos forwardRef para romper el ciclo con DataManagement
     forwardRef(() => DataManagementModule)
   ],
   providers: [
     SchedulingService,
     ShiftOverlapService,
     WorkloadService,
-    AuditService,      // Servicio de Auditoría (Fichaje)
-    GeofencingService  // Dependencia de Auditoría
+    AuditService,
+    GeofencingService,
+    // 2. Registrarlo aquí
+    PatternService 
   ],
   exports: [
     SchedulingService,
     WorkloadService,
-    AuditService       // Exportamos para que la API lo vea
+    AuditService,
+    // 3. Exportarlo aquí para que index.ts lo vea
+    PatternService 
   ],
 })
 export class SchedulingModule {}

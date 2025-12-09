@@ -8,4 +8,7 @@ export declare class PatternService {
         created: number;
         message: string;
     }>;
+    clearVacancies(objectiveId: string, month: number, year: number): Promise<{
+        deleted: number;
+    }>;
 }

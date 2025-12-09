@@ -16,20 +16,23 @@ let WorkloadService = class WorkloadService {
     constructor() {
         this.getDb = () => admin.app().firestore();
     }
-    async validateAssignment(employeeId, shiftStart, shiftEnd) {
+    async validateAssignment(employeeId, shiftStart, shiftEnd, excludeShiftId) {
         const db = this.getDb();
         const empDoc = await db.collection(EMPLOYEES_COLLECTION).doc(employeeId).get();
         if (!empDoc.exists)
-            throw new common_1.BadRequestException('Employee not found');
+            throw new common_1.BadRequestException('Empleado no encontrado');
         const employee = empDoc.data();
-        const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd);
+        const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd, excludeShiftId);
         if (conflicts.length > 0) {
-            throw new common_1.ConflictException('SOLAPAMIENTO DETECTADO: El empleado ya tiene un turno asignado en este período.');
+            const c = conflicts[0];
+            const startStr = c.startTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const endStr = c.endTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            throw new common_1.ConflictException(`¡CONFLICTO! ${employee.name} ya cubre un turno de ${startStr} a ${endStr}.`);
         }
         await this.checkAvailability(employeeId, shiftStart, shiftEnd);
         await this.checkMonthlyLimit(employee, shiftStart, shiftEnd);
     }
-    async checkShiftOverlap(employeeId, start, end) {
+    async checkShiftOverlap(employeeId, start, end, excludeShiftId) {
         const db = this.getDb();
         const shiftsQuery = db.collection(SHIFTS_COLLECTION)
             .where('employeeId', '==', employeeId)
@@ -37,9 +40,11 @@ let WorkloadService = class WorkloadService {
         const snapshot = await shiftsQuery.get();
         const conflictingShifts = [];
         snapshot.forEach(doc => {
+            if (excludeShiftId && doc.id === excludeShiftId)
+                return;
             const shift = doc.data();
             const sStart = shift.startTime.toDate();
-            if (sStart.getTime() < end.getTime()) {
+            if (sStart.getTime() < end.getTime() && shift.status !== 'Canceled') {
                 conflictingShifts.push({ id: doc.id, ...shift });
             }
         });
@@ -56,7 +61,7 @@ let WorkloadService = class WorkloadService {
             const absStart = absence.startDate.toDate();
             const absEnd = absence.endDate.toDate();
             if (start.getTime() < absEnd.getTime() && end.getTime() > absStart.getTime()) {
-                throw new common_1.ConflictException(`BLOQUEO: El empleado está ausente por: ${absence.type}`);
+                throw new common_1.ConflictException(`BLOQUEO: El empleado está de licencia (${absence.type}) en esas fechas.`);
             }
         });
     }
@@ -73,6 +78,8 @@ let WorkloadService = class WorkloadService {
         let accumulatedHours = 0;
         shiftsSnapshot.forEach(doc => {
             const shift = doc.data();
+            if (shift.status === 'Canceled')
+                return;
             const sStart = shift.startTime.toDate();
             const sEnd = shift.endTime.toDate();
             const duration = (sEnd.getTime() - sStart.getTime()) / (1000 * 60 * 60);
@@ -81,7 +88,7 @@ let WorkloadService = class WorkloadService {
         const totalProjected = accumulatedHours + newDurationHours;
         const maxHours = employee.maxHoursPerMonth || 176;
         if (totalProjected > maxHours) {
-            throw new common_1.ConflictException(`LÍMITE EXCEDIDO: Acumulado(${accumulatedHours.toFixed(1)}h) + Nuevo supera el máximo.`);
+            throw new common_1.ConflictException(`LÍMITE EXCEDIDO: Acumulado(${accumulatedHours.toFixed(1)}h) + Nuevo supera el máximo de ${maxHours}h.`);
         }
     }
 };
