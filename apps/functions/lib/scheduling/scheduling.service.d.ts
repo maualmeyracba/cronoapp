@@ -15,9 +15,9 @@ export declare class SchedulingService {
     updateShift(shiftId: string, updateData: Partial<IShift> & {
         authorizeOvertime?: boolean;
     }): Promise<void>;
-    deleteShift(shiftId: string): Promise<void>;
     replicateDailyStructure(objectiveId: string, sourceDateStr: string, targetStartDateStr: string, targetEndDateStr: string, schedulerId: string, targetDays?: number[]): Promise<{
         created: number;
         skipped: number;
     }>;
+    deleteShift(shiftId: string): Promise<void>;
 }

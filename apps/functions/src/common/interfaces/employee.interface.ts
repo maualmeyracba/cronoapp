@@ -1,4 +1,5 @@
-import * as admin from 'firebase-admin'; // 🛑 SDK SERVIDOR
+import * as admin from 'firebase-admin';
+// 🛑 SDK SERVIDOR
 
 /**
  * @description Define los roles de usuario dentro del sistema.
@@ -9,10 +10,8 @@ export type EmployeeRole = 'admin' | 'employee';
  * @description Define los tipos de contrato laboral soportados.
  */
 export type ContractType = 'FullTime' | 'PartTime' | 'Eventual';
-
 /**
  * @description Interfaz de Colaborador (Versión Backend).
- * Se utiliza para validar datos y tipar retornos en Cloud Functions.
  */
 export interface IEmployee {
   uid: string;
@@ -23,20 +22,22 @@ export interface IEmployee {
   isAvailable: boolean;
   maxHoursPerMonth: number;
   contractType: ContractType;
-
-  // 🛑 CAMBIO ARQUITECTÓNICO: Pool de Recursos
-  clientId?: string;       // Opcional en el backend
-  businessUnitId?: string; // Nuevo campo para multi-tenancy
+  
+  // 🛑 FIX CRÍTICO: Campos para el Ciclo de Nómina
+  payrollCycleStartDay?: number; // Día del mes en que comienza el ciclo (Ej: 15)
+  payrollCycleEndDay?: number;   // Día del mes en que finaliza el ciclo (Ej: 14)
+  
+  clientId?: string;
+  businessUnitId?: string;
 
   dni: string;        
   fileNumber: string;
   address: string;    
-  phone?: string;     
+  phone?: string;
 }
 
 /**
  * @description Estructura de una ausencia en base de datos.
- * Usa admin.firestore.Timestamp para compatibilidad con Node.js.
  */
 export interface IAbsence {
     id: string;
@@ -53,14 +54,12 @@ export interface IAbsence {
 
 /**
  * @description Payload recibido en las Cloud Functions.
- * Puede recibir Dates o Timestamps serializados, por lo que es flexible.
  */
 export interface IAbsencePayload {
     employeeId: string;
     employeeName: string;
     clientId: string;
     type: 'VACATION' | 'SICK_LEAVE' | 'OTHER';
-    // Flexible para aceptar lo que envíe el front (Date, string ISO o Timestamp)
     startDate: admin.firestore.Timestamp | Date | string; 
     endDate: admin.firestore.Timestamp | Date | string;
     reason: string;

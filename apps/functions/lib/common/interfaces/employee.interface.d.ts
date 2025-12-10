@@ -9,6 +9,8 @@ export interface IEmployee {
     isAvailable: boolean;
     maxHoursPerMonth: number;
     contractType: ContractType;
+    payrollCycleStartDay?: number;
+    payrollCycleEndDay?: number;
     clientId?: string;
     businessUnitId?: string;
     dni: string;

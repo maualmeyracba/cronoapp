@@ -204,6 +204,12 @@ exports.manageEmployees = functions.https.onCall(async (data, context) => {
             case 'GET_ALL_EMPLOYEES':
                 const employees = await employeeService.findAllEmployees(payload?.clientId);
                 return { success: true, data: employees };
+            case 'GET_WORKLOAD_REPORT':
+                if (!payload.uid || !payload.month || !payload.year) {
+                    throw new functions.https.HttpsError('invalid-argument', 'Faltan parámetros (uid, month, year) para el reporte.');
+                }
+                const report = await employeeService.getEmployeeWorkload(payload.uid, payload.month, payload.year);
+                return { success: true, data: report };
             case 'UPDATE_EMPLOYEE':
                 await employeeService.updateEmployee(payload.uid, payload.data);
                 return { success: true, message: 'Datos actualizados.' };

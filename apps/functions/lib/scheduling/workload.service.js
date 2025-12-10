@@ -16,35 +16,78 @@ let WorkloadService = class WorkloadService {
     constructor() {
         this.getDb = () => admin.app().firestore();
     }
+    toDate(val) {
+        if (!val)
+            return new Date();
+        if (val instanceof admin.firestore.Timestamp)
+            return val.toDate();
+        if (val._seconds)
+            return new Date(val._seconds * 1000);
+        if (typeof val === 'string')
+            return new Date(val);
+        return new Date(val);
+    }
+    getCycleDates(shiftDate, startDay, endDay) {
+        const year = shiftDate.getFullYear();
+        const month = shiftDate.getMonth();
+        let cycleStart, cycleEnd;
+        if (startDay >= 1 && startDay <= 31 && (endDay >= 1 && endDay <= 31 || endDay === 0)) {
+            if (startDay <= endDay || endDay === 0) {
+                cycleStart = new Date(year, month, startDay, 0, 0, 0);
+                cycleEnd = endDay === 0
+                    ? new Date(year, month + 1, 0, 23, 59, 59, 999)
+                    : new Date(year, month, endDay, 23, 59, 59, 999);
+            }
+            else {
+                if (shiftDate.getDate() >= startDay) {
+                    cycleStart = new Date(year, month, startDay, 0, 0, 0);
+                    cycleEnd = new Date(year, month + 1, endDay, 23, 59, 59, 999);
+                }
+                else {
+                    cycleStart = new Date(year, month - 1, startDay, 0, 0, 0);
+                    cycleEnd = new Date(year, month, endDay, 23, 59, 59, 999);
+                }
+            }
+        }
+        else {
+            cycleStart = new Date(year, month, 1, 0, 0, 0);
+            cycleEnd = new Date(year, month + 1, 0, 23, 59, 59, 999);
+        }
+        return { cycleStart, cycleEnd };
+    }
     async validateAssignment(employeeId, shiftStart, shiftEnd, excludeShiftId) {
         const db = this.getDb();
         const empDoc = await db.collection(EMPLOYEES_COLLECTION).doc(employeeId).get();
         if (!empDoc.exists)
             throw new common_1.BadRequestException('Empleado no encontrado');
         const employee = empDoc.data();
+        console.log(`🔍 [Workload] Validando carga para: ${employee.name} (${employeeId})`);
         const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd, excludeShiftId);
         if (conflicts.length > 0) {
             const c = conflicts[0];
-            const startStr = c.startTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            const endStr = c.endTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            throw new common_1.ConflictException(`¡CONFLICTO! ${employee.name} ya cubre un turno de ${startStr} a ${endStr}.`);
+            const s = new Date(this.toDate(c.startTime).getTime() - 10800000);
+            const e = new Date(this.toDate(c.endTime).getTime() - 10800000);
+            const timeStr = `${s.toISOString().substring(11, 16)} - ${e.toISOString().substring(11, 16)}`;
+            throw new common_1.ConflictException(`¡CONFLICTO! Ya tiene un turno asignado en ese horario: ${timeStr}`);
         }
         await this.checkAvailability(employeeId, shiftStart, shiftEnd);
-        await this.checkMonthlyLimit(employee, shiftStart, shiftEnd);
+        await this.checkMonthlyLimit(employee, shiftStart, shiftEnd, excludeShiftId);
     }
     async checkShiftOverlap(employeeId, start, end, excludeShiftId) {
         const db = this.getDb();
         const shiftsQuery = db.collection(SHIFTS_COLLECTION)
             .where('employeeId', '==', employeeId)
-            .where('endTime', '>', start);
+            .where('endTime', '>', admin.firestore.Timestamp.fromDate(start));
         const snapshot = await shiftsQuery.get();
         const conflictingShifts = [];
         snapshot.forEach(doc => {
             if (excludeShiftId && doc.id === excludeShiftId)
                 return;
             const shift = doc.data();
-            const sStart = shift.startTime.toDate();
-            if (sStart.getTime() < end.getTime() && shift.status !== 'Canceled') {
+            if (shift.status === 'Canceled')
+                return;
+            const sStart = this.toDate(shift.startTime);
+            if (sStart.getTime() < end.getTime()) {
                 conflictingShifts.push({ id: doc.id, ...shift });
             }
         });
@@ -54,42 +97,92 @@ let WorkloadService = class WorkloadService {
         const db = this.getDb();
         const absencesSnapshot = await db.collection(ABSENCES_COLLECTION)
             .where('employeeId', '==', employeeId)
-            .where('endDate', '>=', start)
+            .where('status', 'in', ['APPROVED', 'PENDING'])
             .get();
         absencesSnapshot.forEach(doc => {
             const absence = doc.data();
-            const absStart = absence.startDate.toDate();
-            const absEnd = absence.endDate.toDate();
+            const absStart = this.toDate(absence.startDate);
+            const absEnd = this.toDate(absence.endDate);
             if (start.getTime() < absEnd.getTime() && end.getTime() > absStart.getTime()) {
-                throw new common_1.ConflictException(`BLOQUEO: El empleado está de licencia (${absence.type}) en esas fechas.`);
+                throw new common_1.ConflictException(`⛔ BLOQUEO: Licencia activa (${absence.type}).`);
             }
         });
     }
-    async checkMonthlyLimit(employee, newShiftStart, newShiftEnd) {
+    async checkMonthlyLimit(employee, newShiftStart, newShiftEnd, excludeShiftId) {
         const db = this.getDb();
         const newDurationHours = (newShiftEnd.getTime() - newShiftStart.getTime()) / (1000 * 60 * 60);
-        const startOfMonth = new Date(newShiftStart.getFullYear(), newShiftStart.getMonth(), 1);
-        const endOfMonth = new Date(newShiftStart.getFullYear(), newShiftStart.getMonth() + 1, 0, 23, 59, 59);
+        const { cycleStart: startOfCycle, cycleEnd: endOfCycle } = this.getCycleDates(newShiftStart, employee.payrollCycleStartDay || 1, employee.payrollCycleEndDay || 0);
+        console.log(`📊 [Workload] Calculando ciclo: ${startOfCycle.toISOString()} a ${endOfCycle.toISOString()}`);
         const shiftsSnapshot = await db.collection(SHIFTS_COLLECTION)
             .where('employeeId', '==', employee.uid)
-            .where('startTime', '>=', startOfMonth)
-            .where('startTime', '<=', endOfMonth)
+            .where('startTime', '>=', admin.firestore.Timestamp.fromDate(startOfCycle))
+            .where('startTime', '<=', admin.firestore.Timestamp.fromDate(endOfCycle))
             .get();
         let accumulatedHours = 0;
+        let count = 0;
         shiftsSnapshot.forEach(doc => {
-            const shift = doc.data();
-            if (shift.status === 'Canceled')
+            if (excludeShiftId && doc.id === excludeShiftId)
                 return;
-            const sStart = shift.startTime.toDate();
-            const sEnd = shift.endTime.toDate();
-            const duration = (sEnd.getTime() - sStart.getTime()) / (1000 * 60 * 60);
-            accumulatedHours += duration;
+            const shift = doc.data();
+            if (shift.status !== 'Canceled' && shift.status !== 'Completed') {
+                const sStart = this.toDate(shift.startTime);
+                const sEnd = this.toDate(shift.endTime);
+                const duration = (sEnd.getTime() - sStart.getTime()) / (1000 * 60 * 60);
+                accumulatedHours += duration;
+                count++;
+            }
         });
         const totalProjected = accumulatedHours + newDurationHours;
-        const maxHours = employee.maxHoursPerMonth || 176;
+        const maxHours = Number(employee.maxHoursPerMonth) || 176;
         if (totalProjected > maxHours) {
-            throw new common_1.ConflictException(`LÍMITE EXCEDIDO: Acumulado(${accumulatedHours.toFixed(1)}h) + Nuevo supera el máximo de ${maxHours}h.`);
+            const exceeded = (totalProjected - maxHours).toFixed(1);
+            throw new common_1.ConflictException(`LÍMITE EXCEDIDO: ${employee.name} llega a ${totalProjected.toFixed(1)}h (Máx: ${maxHours}h). Exceso: ${exceeded}h. (Ciclo: ${startOfCycle.toLocaleDateString()} - ${endOfCycle.toLocaleDateString()})`);
         }
+    }
+    async getWorkloadReport(employeeId, month, year) {
+        const db = this.getDb();
+        const dateForCycle = new Date(year, month - 1, 15);
+        const empDoc = await db.collection(EMPLOYEES_COLLECTION).doc(employeeId).get();
+        const employee = empDoc.exists ? empDoc.data() : null;
+        const maxHours = Number(employee?.maxHoursPerMonth) || 176;
+        const { cycleStart: startOfCycle, cycleEnd: endOfCycle } = this.getCycleDates(dateForCycle, employee?.payrollCycleStartDay || 1, employee?.payrollCycleEndDay || 0);
+        const shiftsSnapshot = await db.collection(SHIFTS_COLLECTION)
+            .where('employeeId', '==', employeeId)
+            .where('startTime', '>=', admin.firestore.Timestamp.fromDate(startOfCycle))
+            .where('startTime', '<=', admin.firestore.Timestamp.fromDate(endOfCycle))
+            .get();
+        let assignedHours = 0;
+        let completedHours = 0;
+        const details = [];
+        shiftsSnapshot.forEach(doc => {
+            const shift = doc.data();
+            const sStart = this.toDate(shift.startTime);
+            const sEnd = this.toDate(shift.endTime);
+            const duration = (sEnd.getTime() - sStart.getTime()) / (1000 * 60 * 60);
+            const status = shift.status;
+            if (status !== 'Canceled' && status !== 'Completed') {
+                assignedHours += duration;
+            }
+            if (status === 'Completed') {
+                completedHours += duration;
+            }
+            details.push({
+                shiftId: doc.id,
+                objectiveName: shift.objectiveName,
+                duration: parseFloat(duration.toFixed(1)),
+                status: status,
+                date: sStart.toLocaleDateString('es-AR'),
+                startTime: sStart.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+            });
+        });
+        return {
+            assignedHours: parseFloat(assignedHours.toFixed(1)),
+            completedHours: parseFloat(completedHours.toFixed(1)),
+            maxHours,
+            cycleStart: startOfCycle.toLocaleDateString('es-AR'),
+            cycleEnd: endOfCycle.toLocaleDateString('es-AR'),
+            details: details.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+        };
     }
 };
 exports.WorkloadService = WorkloadService;

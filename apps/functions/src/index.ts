@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin';
 import { createNestApp } from './main';
 import { INestApplicationContext } from '@nestjs/common';
 
-// Servicios
+// Servicios expuestos por NestJS
 import { SchedulingService } from './scheduling/scheduling.service';
 import { AuthService } from './auth/auth.service';
 import { DataManagementService } from './data-management/data-management.service';
@@ -17,7 +17,7 @@ import { PatternService } from './scheduling/pattern.service';
 // Interfaces
 import { EmployeeRole } from './common/interfaces/employee.interface';
 
-// Inicialización
+// Inicialización de Firebase Admin
 if (!admin.apps.length) {
   admin.initializeApp();
 }
@@ -34,6 +34,7 @@ async function getService<T>(service: new (...args: any[]) => T): Promise<T> {
 // Roles Administrativos
 const ADMIN_ROLES = ['admin', 'SuperAdmin', 'Scheduler', 'HR_Manager', 'Manager', 'Operator', 'Supervisor'];
 const ALLOWED_ROLES: EmployeeRole[] = ['admin', 'employee'];
+
 
 // =========================================================
 // 1. GESTIÓN DE USUARIOS (AUTH)
@@ -86,6 +87,7 @@ export const scheduleShift = functions.https.onCall(async (data, context) => {
   } catch (error: any) {
     const err = error as Error;
     if (error instanceof functions.https.HttpsError) throw error;
+    
     console.error('[SCHEDULE_SHIFT_FATAL]', err.message);
     throw new functions.https.HttpsError('internal', `Error: ${err.message}`);
   }
@@ -96,7 +98,6 @@ export const scheduleShift = functions.https.onCall(async (data, context) => {
 // =========================================================
 export const manageShifts = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
-  // Permitimos roles de planificación
   const ALLOWED_PLANNING_ROLES = ['admin', 'SuperAdmin', 'Manager', 'Scheduler'];
 
   if (!callerAuth || !ALLOWED_PLANNING_ROLES.includes(callerAuth.token.role as string)) {
@@ -117,7 +118,7 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
         await schedulingService.deleteShift(payload.id);
         return { success: true, message: 'Turno eliminado.' };
       
-      // 🛑 REPLICACIÓN MASIVA (Clonar estructura)
+      // REPLICACIÓN MASIVA (Clonar estructura)
       case 'REPLICATE_STRUCTURE':
         if (!payload.objectiveId || !payload.sourceDate || !payload.targetStartDate || !payload.targetEndDate) {
             throw new functions.https.HttpsError('invalid-argument', 'Faltan fechas para replicar.');
@@ -134,7 +135,6 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
             data: result, 
             message: `Replicado: ${result.created} turnos. (Omitidos: ${result.skipped} días)` 
         };
-
       default:
         throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
@@ -162,8 +162,8 @@ export const auditShift = functions.https.onCall(async (data, context) => {
         action, 
         coords || null, 
         context.auth.uid,
-        context.auth.token.role as string, // Rol del token
-        isManualOverride || false          // Bandera manual
+        context.auth.token.role as string, 
+        isManualOverride || false          
     );
     
     return { success: true, newStatus: result.status };
@@ -220,34 +220,23 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
       case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
       case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
       case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
-      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data);
-          return { success: true, message: 'Cliente actualizado' };
+      case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
 
       // Objetivos (Edición/Borrado)
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
-      case 'UPDATE_OBJECTIVE': 
-          await clientService.updateObjective(payload.id, payload.data);
-          return { success: true, message: 'Objetivo actualizado correctamente' };
+      case 'UPDATE_OBJECTIVE': await clientService.updateObjective(payload.id, payload.data); return { success: true, message: 'Objetivo actualizado correctamente' };
       
       // Contratos (Servicios)
       case 'CREATE_CONTRACT': return { success: true, data: await clientService.createServiceContract(payload) };
-      case 'UPDATE_CONTRACT': 
-          await clientService.updateServiceContract(payload.id, payload.data);
-          return { success: true, message: 'Servicio actualizado' };
-      case 'DELETE_CONTRACT': 
-          await clientService.deleteServiceContract(payload.id);
-          return { success: true, message: 'Servicio eliminado' };
+      case 'UPDATE_CONTRACT': await clientService.updateServiceContract(payload.id, payload.data); return { success: true, message: 'Servicio actualizado' };
+      case 'DELETE_CONTRACT': await clientService.deleteServiceContract(payload.id); return { success: true, message: 'Servicio eliminado' };
 
       // Modalidades (Tipos de Turno)
       case 'CREATE_SHIFT_TYPE': return { success: true, data: await clientService.createShiftType(payload) };
       case 'GET_SHIFT_TYPES': return { success: true, data: await clientService.getShiftTypesByContract(payload.contractId) };
-      case 'UPDATE_SHIFT_TYPE': 
-          await clientService.updateShiftType(payload.id, payload.data);
-          return { success: true, message: 'Modalidad actualizada' };
-      case 'DELETE_SHIFT_TYPE': 
-          await clientService.deleteShiftType(payload.id);
-          return { success: true, message: 'Modalidad eliminada' };
+      case 'UPDATE_SHIFT_TYPE': await clientService.updateShiftType(payload.id, payload.data); return { success: true, message: 'Modalidad actualizada' };
+      case 'DELETE_SHIFT_TYPE': await clientService.deleteShiftType(payload.id); return { success: true, message: 'Modalidad eliminada' };
       
       default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
@@ -260,7 +249,7 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 7. GESTIÓN DE EMPLEADOS (RRHH)
+// 7. GESTIÓN DE EMPLEADOS (RRHH) - (INCLUYE REPORTE DE CARGA)
 // =========================================================
 export const manageEmployees = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -275,12 +264,22 @@ export const manageEmployees = functions.https.onCall(async (data, context) => {
       case 'GET_ALL_EMPLOYEES':
         const employees = await employeeService.findAllEmployees(payload?.clientId);
         return { success: true, data: employees };
+        
+      case 'GET_WORKLOAD_REPORT': // 🛑 NUEVA ACCIÓN
+        if (!payload.uid || !payload.month || !payload.year) {
+            throw new functions.https.HttpsError('invalid-argument', 'Faltan parámetros (uid, month, year) para el reporte.');
+        }
+        const report = await employeeService.getEmployeeWorkload(payload.uid, payload.month, payload.year);
+        return { success: true, data: report };
+        
       case 'UPDATE_EMPLOYEE':
         await employeeService.updateEmployee(payload.uid, payload.data);
         return { success: true, message: 'Datos actualizados.' };
+        
       case 'DELETE_EMPLOYEE':
         await employeeService.deleteEmployee(payload.uid);
         return { success: true, message: 'Empleado eliminado.' };
+        
       default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
   } catch (error: any) {
@@ -391,8 +390,6 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
         case 'DELETE_PATTERN': 
             await patternService.deletePattern(payload.id); 
             return { success: true };
-        
-        // Generar estructura (Crear vacantes)
         case 'GENERATE_VACANCIES': 
             return patternService.generateVacancies(
                 payload.contractId, 
@@ -400,15 +397,12 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
                 payload.year, 
                 payload.objectiveId 
             );
-        
-        // 🛑 NUEVO: Borrar estructura (Eliminar vacantes)
         case 'CLEAR_VACANCIES':
             return patternService.clearVacancies(
                 payload.objectiveId,
                 payload.month,
                 payload.year
             );
-
         default: throw new functions.https.HttpsError('invalid-argument', 'Acción inválida');
     }
   } catch (error: any) {

@@ -6,5 +6,8 @@ export declare class AbsenceService {
     private readonly absencesCollection;
     private readonly shiftsCollection;
     constructor(workloadService: WorkloadService);
-    createAbsence(payload: IAbsencePayload): Promise<IAbsence>;
+    private toDate;
+    createAbsence(payload: IAbsencePayload): Promise<IAbsence & {
+        impactedShiftsCount: number;
+    }>;
 }

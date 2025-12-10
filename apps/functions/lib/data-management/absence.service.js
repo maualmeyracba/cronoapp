@@ -20,31 +20,46 @@ let AbsenceService = class AbsenceService {
         this.absencesCollection = 'ausencias';
         this.shiftsCollection = 'turnos';
     }
+    toDate(val) {
+        if (!val)
+            return new Date();
+        if (val instanceof admin.firestore.Timestamp)
+            return val.toDate();
+        if (val._seconds)
+            return new Date(val._seconds * 1000);
+        if (typeof val === 'string')
+            return new Date(val);
+        return new Date(val);
+    }
     async createAbsence(payload) {
-        const parseDate = (input) => {
-            if (typeof input === 'string')
-                return new Date(input);
-            if (input && input.seconds)
-                return new Date(input.seconds * 1000);
-            return new Date(input);
-        };
-        const startDateObj = parseDate(payload.startDate);
-        const endDateObj = parseDate(payload.endDate);
+        const startDateObj = this.toDate(payload.startDate);
+        const endDateObj = this.toDate(payload.endDate);
         if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
-            throw new Error('Fechas inválidas recibidas en el backend.');
+            throw new Error('Fechas inválidas.');
         }
+        startDateObj.setHours(0, 0, 0, 0);
+        endDateObj.setHours(23, 59, 59, 999);
         const conflictingShifts = await this.workloadService.checkShiftOverlap(payload.employeeId, startDateObj, endDateObj);
         const db = this.getDb();
         const batch = db.batch();
+        const typeReason = payload.type === 'SICK_LEAVE' ? 'Licencia Médica' :
+            payload.type === 'VACATION' ? 'Vacaciones' : 'Ausencia';
+        let shiftsConvertedToVacancy = 0;
         if (conflictingShifts.length > 0) {
-            console.log(`[AbsenceService] Se encontraron ${conflictingShifts.length} turnos afectados. Procesando bajas...`);
-            conflictingShifts.forEach(shift => {
-                const shiftRef = db.collection(this.shiftsCollection).doc(shift.id);
-                batch.update(shiftRef, {
-                    status: 'Canceled',
-                    description: `Cancelación automática por Ausencia: ${payload.reason}`,
-                    updatedAt: admin.firestore.Timestamp.now()
-                });
+            console.log(`[AbsenceService] Liberando ${conflictingShifts.length} turnos de ${payload.employeeName}...`);
+            conflictingShifts.forEach((shift) => {
+                if (shift.employeeId !== 'VACANTE' && shift.status !== 'Canceled' && shift.status !== 'Completed') {
+                    const shiftRef = db.collection(this.shiftsCollection).doc(shift.id);
+                    batch.update(shiftRef, {
+                        employeeId: 'VACANTE',
+                        employeeName: 'VACANTE',
+                        status: 'Assigned',
+                        description: `Turno liberado por: ${typeReason} de ${payload.employeeName}.`,
+                        isOvertime: false,
+                        updatedAt: admin.firestore.Timestamp.now()
+                    });
+                    shiftsConvertedToVacancy++;
+                }
             });
         }
         const startTimestamp = admin.firestore.Timestamp.fromDate(startDateObj);
@@ -59,12 +74,12 @@ let AbsenceService = class AbsenceService {
             reason: payload.reason,
             status: 'APPROVED',
             createdAt: admin.firestore.Timestamp.now(),
-            impactedShiftsCount: conflictingShifts.length
+            impactedShiftsCount: shiftsConvertedToVacancy
         };
         const newAbsenceRef = db.collection(this.absencesCollection).doc();
         batch.set(newAbsenceRef, newAbsence);
         await batch.commit();
-        return { id: newAbsenceRef.id, ...newAbsence };
+        return { id: newAbsenceRef.id, ...newAbsence, impactedShiftsCount: shiftsConvertedToVacancy };
     }
 };
 exports.AbsenceService = AbsenceService;

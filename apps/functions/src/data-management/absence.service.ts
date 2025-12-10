@@ -2,31 +2,39 @@ import { Injectable } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { WorkloadService } from '../scheduling/workload.service';
 import { IAbsence, IAbsencePayload } from '../common/interfaces/absence.interface';
+import { IShift } from '../common/interfaces/shift.interface';
 
 @Injectable()
 export class AbsenceService {
     private getDb = () => admin.app().firestore();
-    private readonly absencesCollection = 'ausencias'; 
+    private readonly absencesCollection = 'ausencias';
     private readonly shiftsCollection = 'turnos';
     
     constructor(private readonly workloadService: WorkloadService) {}
 
-    async createAbsence(payload: IAbsencePayload): Promise<IAbsence> {
-        // 1. Parsing de fechas (Robustez)
-        const parseDate = (input: any): Date => {
-            if (typeof input === 'string') return new Date(input);
-            if (input && input.seconds) return new Date(input.seconds * 1000);
-            return new Date(input);
-        };
+    private toDate(val: any): Date {
+        if (!val) return new Date();
+        if (val instanceof admin.firestore.Timestamp) return val.toDate();
+        if (val._seconds) return new Date(val._seconds * 1000);
+        if (typeof val === 'string') return new Date(val);
+        return new Date(val);
+    }
 
-        const startDateObj = parseDate(payload.startDate);
-        const endDateObj = parseDate(payload.endDate);
+    async createAbsence(payload: IAbsencePayload): Promise<IAbsence & { impactedShiftsCount: number }> {
+        
+        // 1. Parsing y FIX de Fechas (Día Completo)
+        const startDateObj = this.toDate(payload.startDate);
+        const endDateObj = this.toDate(payload.endDate);
 
         if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
-            throw new Error('Fechas inválidas recibidas en el backend.');
+            throw new Error('Fechas inválidas.');
         }
 
-        // 2. DETECCIÓN DE CONFLICTOS (Turnos afectados)
+        // FIX CRÍTICO: Forzar cobertura de Día Completo (00:00 a 23:59:59.999)
+        startDateObj.setHours(0, 0, 0, 0);
+        endDateObj.setHours(23, 59, 59, 999);
+
+        // 2. DETECCIÓN DE CONFLICTOS
         const conflictingShifts = await this.workloadService.checkShiftOverlap(
             payload.employeeId,
             startDateObj, 
@@ -34,23 +42,31 @@ export class AbsenceService {
         );
 
         const db = this.getDb();
-        const batch = db.batch(); // Preparamos un lote de operaciones atómicas
+        const batch = db.batch(); 
+        
+        const typeReason = payload.type === 'SICK_LEAVE' ? 'Licencia Médica' : 
+                           payload.type === 'VACATION' ? 'Vacaciones' : 'Ausencia';
+        let shiftsConvertedToVacancy = 0;
 
-        // 🛑 LÓGICA DE NEGOCIO CORREGIDA:
-        // Si hay turnos en el medio, NO bloqueamos. Los cancelamos/liberamos.
+        // 🛑 LÓGICA DE CONVERSIÓN A VACANTE (FIX de Mauro)
         if (conflictingShifts.length > 0) {
-            console.log(`[AbsenceService] Se encontraron ${conflictingShifts.length} turnos afectados. Procesando bajas...`);
+            console.log(`[AbsenceService] Liberando ${conflictingShifts.length} turnos de ${payload.employeeName}...`);
             
-            conflictingShifts.forEach(shift => {
-                const shiftRef = db.collection(this.shiftsCollection).doc(shift.id);
-                
-                // Opción: Cancelamos el turno para que el Admin vea que "se cayó" y deba reasignar
-                batch.update(shiftRef, {
-                    status: 'Canceled',
-                    // Agregamos metadata para auditoría
-                    description: `Cancelación automática por Ausencia: ${payload.reason}`,
-                    updatedAt: admin.firestore.Timestamp.now()
-                });
+            conflictingShifts.forEach((shift: IShift) => {
+                // Solo liberamos turnos que están asignados, y no completados o cancelados
+                if (shift.employeeId !== 'VACANTE' && shift.status !== 'Canceled' && shift.status !== 'Completed') {
+                    const shiftRef = db.collection(this.shiftsCollection).doc(shift.id);
+                    
+                    batch.update(shiftRef, {
+                        employeeId: 'VACANTE',
+                        employeeName: 'VACANTE', 
+                        status: 'Assigned', 
+                        description: `Turno liberado por: ${typeReason} de ${payload.employeeName}.`, 
+                        isOvertime: false, 
+                        updatedAt: admin.firestore.Timestamp.now()
+                    });
+                    shiftsConvertedToVacancy++;
+                }
             });
         }
 
@@ -68,17 +84,14 @@ export class AbsenceService {
             reason: payload.reason,
             status: 'APPROVED', 
             createdAt: admin.firestore.Timestamp.now(), 
-            // Guardamos referencia de cuántos turnos impactó
-            impactedShiftsCount: conflictingShifts.length 
+            impactedShiftsCount: shiftsConvertedToVacancy 
         };
 
-        // Agregamos la creación de ausencia al lote
         const newAbsenceRef = db.collection(this.absencesCollection).doc();
         batch.set(newAbsenceRef, newAbsence);
 
-        // 4. Ejecutar todo junto (Atomicidad)
         await batch.commit();
-        
-        return { id: newAbsenceRef.id, ...newAbsence } as IAbsence;
+
+        return { id: newAbsenceRef.id, ...newAbsence, impactedShiftsCount: shiftsConvertedToVacancy };
     }
 }

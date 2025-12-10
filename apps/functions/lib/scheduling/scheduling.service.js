@@ -46,16 +46,17 @@ let SchedulingService = class SchedulingService {
             return;
         const conflict = absencesSnap.docs.find(doc => {
             const data = doc.data();
+            if (data.status === 'REJECTED' || data.status === 'CANCELLED')
+                return false;
             const absStart = this.convertToDate(data.startDate);
             const absEnd = this.convertToDate(data.endDate);
-            return (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime());
+            if (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime()) {
+                const type = data.type === 'SICK_LEAVE' ? 'LICENCIA MÉDICA' :
+                    data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
+                throw new functions.https.HttpsError('failed-precondition', `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`);
+            }
+            return false;
         });
-        if (conflict) {
-            const data = conflict.data();
-            const type = data.type === 'SICK_LEAVE' ? 'LICENCIA MÉDICA' :
-                data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
-            throw new functions.https.HttpsError('failed-precondition', `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`);
-        }
     }
     async assignShift(shiftData, userAuth) {
         const dbInstance = this.getDb();
@@ -82,11 +83,12 @@ let SchedulingService = class SchedulingService {
                 await this.workloadService.validateAssignment(employeeId, newStart, newEnd);
             }
             catch (error) {
-                if (error.message && (error.message.includes('LÍMITE EXCEDIDO') || error.code === 'resource-exhausted')) {
+                if (error.message && (error.message.includes('LÍMITE EXCEDIDO') || error.status === 409)) {
                     if (!shiftData.authorizeOvertime) {
                         throw new functions.https.HttpsError('resource-exhausted', error.message);
                     }
                     isOvertime = true;
+                    console.log(`⚠️ Overtime autorizado para ${employeeId}`);
                 }
                 else {
                     throw error;
@@ -157,7 +159,7 @@ let SchedulingService = class SchedulingService {
                     isOvertime = false;
             }
             catch (e) {
-                if (e.message && e.message.includes('LÍMITE EXCEDIDO')) {
+                if (e.message && (e.message.includes('LÍMITE EXCEDIDO') || e.status === 409)) {
                     if (!updateData.authorizeOvertime) {
                         throw new functions.https.HttpsError('resource-exhausted', e.message);
                     }
@@ -178,10 +180,6 @@ let SchedulingService = class SchedulingService {
         safeUpdate.updatedAt = admin.firestore.Timestamp.now();
         safeUpdate.isOvertime = isOvertime;
         await shiftRef.update(safeUpdate);
-    }
-    async deleteShift(shiftId) {
-        const db = this.getDb();
-        await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
     }
     async replicateDailyStructure(objectiveId, sourceDateStr, targetStartDateStr, targetEndDateStr, schedulerId, targetDays) {
         const db = this.getDb();
@@ -230,7 +228,7 @@ let SchedulingService = class SchedulingService {
                 skipped++;
                 continue;
             }
-            existingShifts.forEach(s => { batch.delete(s.ref); opCount++; });
+            existingShifts.forEach(doc => { batch.delete(doc.ref); opCount++; });
             for (const template of sourceShifts) {
                 const tStart = this.convertToDate(template.startTime);
                 const tEnd = this.convertToDate(template.endTime);
@@ -263,6 +261,10 @@ let SchedulingService = class SchedulingService {
         if (opCount > 0)
             await batch.commit();
         return { created: opCount, skipped };
+    }
+    async deleteShift(shiftId) {
+        const db = this.getDb();
+        await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
     }
 };
 exports.SchedulingService = SchedulingService;

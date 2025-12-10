@@ -25,12 +25,12 @@ export class SchedulingService {
     return new Date(input);
   }
 
-  // 1. VALIDACIÓN DE AUSENCIAS (HARD BLOCK)
+  // 1. VALIDACIÓN DE AUSENCIAS (HARD BLOCK) - FIX: Evitar Bloqueo Persistente
   private async checkAbsenceConflict(employeeId: string, shiftStart: Date, shiftEnd: Date): Promise<void> {
       if (employeeId === 'VACANTE') return;
 
       const db = this.getDb();
-      // Buscamos ausencias del empleado (filtrado en memoria para rangos complejos)
+      // Traemos TODAS las ausencias activas para el empleado
       const absencesSnap = await db.collection(ABSENCES_COLLECTION)
           .where('employeeId', '==', employeeId)
           .where('status', 'in', ['APPROVED', 'PENDING']) 
@@ -40,23 +40,22 @@ export class SchedulingService {
 
       const conflict = absencesSnap.docs.find(doc => {
           const data = doc.data();
+          if (data.status === 'REJECTED' || data.status === 'CANCELLED') return false;
+
           const absStart = this.convertToDate(data.startDate);
           const absEnd = this.convertToDate(data.endDate);
-          
-          // Ajuste de granularidad para evitar falsos positivos por milisegundos
-          // (InicioA < FinB) y (FinA > InicioB)
-          return (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime());
-      });
 
-      if (conflict) {
-          const data = conflict.data();
-          const type = data.type === 'SICK_LEAVE' ? 'LICENCIA MÉDICA' : 
-                       data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
-          throw new functions.https.HttpsError(
-              'failed-precondition', 
-              `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`
-          );
-      }
+          // 🛑 FIX: Lógica de Overlap. Solo bloquea si el turno intersecta el rango de la licencia.
+          if (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime()) {
+              const type = data.type === 'SICK_LEAVE' ? 'LICENCIA MÉDICA' : 
+                           data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
+              throw new functions.https.HttpsError(
+                  'failed-precondition', 
+                  `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`
+              );
+          }
+          return false;
+      });
   }
 
   // --- CREAR TURNO INDIVIDUAL ---
@@ -78,29 +77,30 @@ export class SchedulingService {
     const employeeId = shiftData.employeeId!;
     if (newStart.getTime() >= newEnd.getTime()) throw new BadRequestException('Horario inválido.');
 
-    // 1. VALIDAR AUSENCIAS (No negociable)
+    // 1. VALIDAR AUSENCIAS (Hard Block)
     await this.checkAbsenceConflict(employeeId, newStart, newEnd);
 
-    // 2. VALIDAR CARGA HORARIA (Negociable)
+    // 2. VALIDAR CARGA HORARIA (Soft Block)
     let isOvertime = false;
     if (employeeId !== 'VACANTE') {
         try {
+            // Llama a la validación que suma correctamente las horas
             await this.workloadService.validateAssignment(employeeId, newStart, newEnd);
         } catch (error: any) {
-            // Si el error es por límite excedido...
-            if (error.message && (error.message.includes('LÍMITE EXCEDIDO') || error.code === 'resource-exhausted')) {
-                // Si NO autorizó, bloqueamos y pedimos permiso
+            if (error.message && (error.message.includes('LÍMITE EXCEDIDO') || error.status === 409)) { 
                 if (!shiftData.authorizeOvertime) {
+                    // Rebotamos con error específico para activar el diálogo en el frontend
                     throw new functions.https.HttpsError('resource-exhausted', error.message);
                 }
-                // Si autorizó, marcamos el flag y continuamos
                 isOvertime = true;
+                console.log(`⚠️ Overtime autorizado para ${employeeId}`);
             } else {
-                throw error; // Otros errores no se pueden saltar
+                throw error;
             }
         }
     }
 
+    // 3. TRANSACCIÓN FINAL
     try {
       await dbInstance.runTransaction(async (transaction) => {
         if (employeeId !== 'VACANTE') {
@@ -133,7 +133,7 @@ export class SchedulingService {
           schedulerId: userAuth.uid,
           updatedAt: admin.firestore.Timestamp.now(),
           role: (shiftData as any).role || 'Vigilador',
-          isOvertime // Persistimos si fue autorizado
+          isOvertime 
         };
 
         transaction.set(newShiftRef, finalShift);
@@ -166,20 +166,19 @@ export class SchedulingService {
       let isOvertime = currentShift.isOvertime || false;
 
       if (isRealEmployee && hasChanged) {
-           // 1. Validar Ausencias (Hard Block)
+           // 1. Validar Ausencias
            await this.checkAbsenceConflict(effectiveEmployeeId, effectiveStart, effectiveEnd);
 
-           // 2. Validar Carga (Soft Block)
+           // 2. Validar Carga
            try {
                await this.workloadService.validateAssignment(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
-               // Si pasa la validación estándar, quitamos marca de overtime previo si la tenía
                if (!updateData.authorizeOvertime) isOvertime = false; 
            } catch (e: any) {
-               if (e.message && e.message.includes('LÍMITE EXCEDIDO')) {
+               if (e.message && (e.message.includes('LÍMITE EXCEDIDO') || e.status === 409)) {
                    if (!updateData.authorizeOvertime) {
                        throw new functions.https.HttpsError('resource-exhausted', e.message);
                    }
-                   isOvertime = true; // Autorizado
+                   isOvertime = true;
                } else {
                    throw e;
                }
@@ -199,11 +198,6 @@ export class SchedulingService {
       await shiftRef.update(safeUpdate);
   }
 
-  async deleteShift(shiftId: string): Promise<void> {
-      const db = this.getDb();
-      await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
-  }
-
   // --- REPLICAR ESTRUCTURA (Lógica Corregida) ---
   async replicateDailyStructure(
     objectiveId: string, 
@@ -215,8 +209,7 @@ export class SchedulingService {
   ): Promise<{ created: number, skipped: number }> {
     const db = this.getDb();
     
-    // Configuración UTC para evitar saltos de día
-    const TZ_OFFSET_HOURS = 3; // Ajuste para que 00:00 local sea detectado correctamente
+    const TZ_OFFSET_HOURS = 3; 
     const sourceDate = new Date(sourceDateStr + 'T00:00:00');
     const startSource = new Date(sourceDate); startSource.setHours(startSource.getHours() + TZ_OFFSET_HOURS);
     const endSource = new Date(startSource); endSource.setHours(startSource.getHours() + 23, 59, 59, 999);
@@ -229,7 +222,6 @@ export class SchedulingService {
 
     if (sourceShiftsSnap.empty) throw new functions.https.HttpsError('not-found', 'El día origen no tiene turnos.');
 
-    // Solo copiamos lo activo
     const sourceShifts = sourceShiftsSnap.docs.map(doc => doc.data() as IShift).filter(s => s.status !== 'Canceled');
     
     const batch = db.batch();
@@ -246,7 +238,6 @@ export class SchedulingService {
     for (let d = new Date(loopStart); d <= loopEnd; d.setDate(d.getDate() + 1)) {
         if (!allowedDays.includes(d.getDay())) continue;
 
-        // Definir límites día destino
         const dayStartUTC = new Date(d);
         dayStartUTC.setHours(dayStartUTC.getHours() + TZ_OFFSET_HOURS);
         const dayEndUTC = new Date(dayStartUTC);
@@ -258,24 +249,19 @@ export class SchedulingService {
             .where('startTime', '<=', admin.firestore.Timestamp.fromDate(dayEndUTC))
             .get();
 
-        // Si el día está vacío, lo saltamos (Tu regla de negocio)
         if (existingCheck.empty) { skipped++; continue; }
 
         const existingShifts = existingCheck.docs.map(doc => ({ ref: doc.ref, data: doc.data() as IShift }));
-        
-        // Si hay empleados reales, protegemos el día y no copiamos
+             
         const hasRealEmployees = existingShifts.some(s => s.data.employeeId !== 'VACANTE' && s.data.status !== 'Canceled');
         if (hasRealEmployees) { skipped++; continue; }
 
-        // Si solo hay vacantes, borramos para reemplazar
-        existingShifts.forEach(s => { batch.delete(s.ref); opCount++; });
+        existingShifts.forEach(doc => { batch.delete(doc.ref); opCount++; });
 
-        // Insertamos copias
         for (const template of sourceShifts) {
             const tStart = this.convertToDate(template.startTime);
             const tEnd = this.convertToDate(template.endTime);
             
-            // Calculamos delta para replicar hora exacta
             const msFromStartOfDay = tStart.getTime() - startSource.getTime();
             const durationMs = tEnd.getTime() - tStart.getTime();
             
@@ -306,5 +292,10 @@ export class SchedulingService {
 
     if (opCount > 0) await batch.commit();
     return { created: opCount, skipped };
+  }
+  
+  async deleteShift(shiftId: string): Promise<void> {
+      const db = this.getDb();
+      await db.collection(SHIFTS_COLLECTION).doc(shiftId).delete();
   }
 }

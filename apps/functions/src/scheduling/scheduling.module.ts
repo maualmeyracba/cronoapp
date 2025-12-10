@@ -1,11 +1,10 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { SchedulingService } from './scheduling.service';
 import { ShiftOverlapService } from './shift-overlap.service';
-import { WorkloadService } from './workload.service';
+import { WorkloadService } from './workload.service'; // 🛑 Correcto: Importa la clase
 import { AuditService } from './audit.service';
 import { GeofencingService } from './geofencing.service';
-// 1. Importar PatternService
-import { PatternService } from './pattern.service'; 
+import { PatternService } from './pattern.service';
 import { DataManagementModule } from '../data-management/data-management.module';
 
 @Module({
@@ -18,14 +17,12 @@ import { DataManagementModule } from '../data-management/data-management.module'
     WorkloadService,
     AuditService,
     GeofencingService,
-    // 2. Registrarlo aquí
     PatternService 
   ],
   exports: [
     SchedulingService,
-    WorkloadService,
+    WorkloadService, // 🛑 CORRECTO: Exportado para que AbsenceService lo pueda inyectar
     AuditService,
-    // 3. Exportarlo aquí para que index.ts lo vea
     PatternService 
   ],
 })
