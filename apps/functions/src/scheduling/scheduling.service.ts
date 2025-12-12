@@ -4,9 +4,11 @@ import { IShift } from '../common/interfaces/shift.interface';
 import { ShiftOverlapService } from './shift-overlap.service';
 import { WorkloadService } from './workload.service';
 import * as functions from 'firebase-functions';
+import { IObjective } from '../common/interfaces/client.interface';
 
 const SHIFTS_COLLECTION = 'turnos';
-const ABSENCES_COLLECTION = 'ausencias'; 
+const ABSENCES_COLLECTION = 'ausencias';
+const OBJECTIVES_COLLECTION = 'objetivos'; // 🛑 CONSTANTE AGREGADA
 
 @Injectable()
 export class SchedulingService {
@@ -25,12 +27,10 @@ export class SchedulingService {
     return new Date(input);
   }
 
-  // 1. VALIDACIÓN DE AUSENCIAS (HARD BLOCK) - FIX: Evitar Bloqueo Persistente
+  // 1. VALIDACIÓN DE AUSENCIAS (HARD BLOCK)
   private async checkAbsenceConflict(employeeId: string, shiftStart: Date, shiftEnd: Date): Promise<void> {
       if (employeeId === 'VACANTE') return;
-
       const db = this.getDb();
-      // Traemos TODAS las ausencias activas para el empleado
       const absencesSnap = await db.collection(ABSENCES_COLLECTION)
           .where('employeeId', '==', employeeId)
           .where('status', 'in', ['APPROVED', 'PENDING']) 
@@ -38,14 +38,13 @@ export class SchedulingService {
 
       if (absencesSnap.empty) return;
 
-      const conflict = absencesSnap.docs.find(doc => {
+      absencesSnap.docs.forEach(doc => {
           const data = doc.data();
-          if (data.status === 'REJECTED' || data.status === 'CANCELLED') return false;
+          if (data.status === 'REJECTED' || data.status === 'CANCELLED') return;
 
           const absStart = this.convertToDate(data.startDate);
           const absEnd = this.convertToDate(data.endDate);
 
-          // 🛑 FIX: Lógica de Overlap. Solo bloquea si el turno intersecta el rango de la licencia.
           if (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime()) {
               const type = data.type === 'SICK_LEAVE' ? 'LICENCIA MÉDICA' : 
                            data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
@@ -54,7 +53,6 @@ export class SchedulingService {
                   `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`
               );
           }
-          return false;
       });
   }
 
@@ -77,19 +75,21 @@ export class SchedulingService {
     const employeeId = shiftData.employeeId!;
     if (newStart.getTime() >= newEnd.getTime()) throw new BadRequestException('Horario inválido.');
 
-    // 1. VALIDAR AUSENCIAS (Hard Block)
+    // 🛑 BUSCAR NOMBRE REAL DEL OBJETIVO (FIX)
+    const objDoc = await dbInstance.collection(OBJECTIVES_COLLECTION).doc(shiftData.objectiveId).get();
+    const realObjectiveName = objDoc.exists ? (objDoc.data() as IObjective).name : (shiftData.objectiveName || 'Sede');
+
+    // 1. VALIDAR AUSENCIAS
     await this.checkAbsenceConflict(employeeId, newStart, newEnd);
 
     // 2. VALIDAR CARGA HORARIA (Soft Block)
     let isOvertime = false;
     if (employeeId !== 'VACANTE') {
         try {
-            // Llama a la validación que suma correctamente las horas
             await this.workloadService.validateAssignment(employeeId, newStart, newEnd);
         } catch (error: any) {
             if (error.message && (error.message.includes('LÍMITE EXCEDIDO') || error.status === 409)) { 
                 if (!shiftData.authorizeOvertime) {
-                    // Rebotamos con error específico para activar el diálogo en el frontend
                     throw new functions.https.HttpsError('resource-exhausted', error.message);
                 }
                 isOvertime = true;
@@ -126,7 +126,7 @@ export class SchedulingService {
           employeeId,
           objectiveId: shiftData.objectiveId!,
           employeeName: shiftData.employeeName || 'S/D', 
-          objectiveName: shiftData.objectiveName || 'S/D',
+          objectiveName: realObjectiveName, // 🛑 USAR NOMBRE REAL
           startTime: admin.firestore.Timestamp.fromDate(newStart), 
           endTime: admin.firestore.Timestamp.fromDate(newEnd),
           status: 'Assigned',
@@ -135,12 +135,10 @@ export class SchedulingService {
           role: (shiftData as any).role || 'Vigilador',
           isOvertime 
         };
-
         transaction.set(newShiftRef, finalShift);
       });
       
-      return { id: newShiftRef.id, ...shiftData } as IShift;
-
+      return { id: newShiftRef.id, ...shiftData, objectiveName: realObjectiveName } as IShift;
     } catch (error: any) {
         if (error instanceof functions.https.HttpsError) throw error;
         throw new functions.https.HttpsError('internal', error.message);
@@ -168,7 +166,6 @@ export class SchedulingService {
       if (isRealEmployee && hasChanged) {
            // 1. Validar Ausencias
            await this.checkAbsenceConflict(effectiveEmployeeId, effectiveStart, effectiveEnd);
-
            // 2. Validar Carga
            try {
                await this.workloadService.validateAssignment(effectiveEmployeeId, effectiveStart, effectiveEnd, shiftId);
@@ -194,11 +191,10 @@ export class SchedulingService {
       
       safeUpdate.updatedAt = admin.firestore.Timestamp.now();
       safeUpdate.isOvertime = isOvertime;
-      
       await shiftRef.update(safeUpdate);
   }
 
-  // --- REPLICAR ESTRUCTURA (Lógica Corregida) ---
+  // --- REPLICAR ESTRUCTURA ---
   async replicateDailyStructure(
     objectiveId: string, 
     sourceDateStr: string, 
@@ -208,7 +204,6 @@ export class SchedulingService {
     targetDays?: number[]
   ): Promise<{ created: number, skipped: number }> {
     const db = this.getDb();
-    
     const TZ_OFFSET_HOURS = 3; 
     const sourceDate = new Date(sourceDateStr + 'T00:00:00');
     const startSource = new Date(sourceDate); startSource.setHours(startSource.getHours() + TZ_OFFSET_HOURS);
@@ -221,18 +216,21 @@ export class SchedulingService {
         .get();
 
     if (sourceShiftsSnap.empty) throw new functions.https.HttpsError('not-found', 'El día origen no tiene turnos.');
-
     const sourceShifts = sourceShiftsSnap.docs.map(doc => doc.data() as IShift).filter(s => s.status !== 'Canceled');
     
+    // 🛑 OBTENER NOMBRE REAL (Para asegurar consistencia en replicación)
+    const objDoc = await db.collection(OBJECTIVES_COLLECTION).doc(objectiveId).get();
+    const realObjName = objDoc.exists ? (objDoc.data() as IObjective).name : sourceShifts[0].objectiveName;
+
     const batch = db.batch();
     let opCount = 0;
     let skipped = 0;
     const MAX_BATCH_SIZE = 450; 
     const allowedDays = targetDays && targetDays.length > 0 ? targetDays : [0,1,2,3,4,5,6];
-
+    
     const startTarget = new Date(targetStartDateStr + 'T00:00:00');
     const endTarget = new Date(targetEndDateStr + 'T00:00:00');
-    const loopStart = new Date(startTarget); 
+    const loopStart = new Date(startTarget);
     const loopEnd = new Date(endTarget);
 
     for (let d = new Date(loopStart); d <= loopEnd; d.setDate(d.getDate() + 1)) {
@@ -242,7 +240,8 @@ export class SchedulingService {
         dayStartUTC.setHours(dayStartUTC.getHours() + TZ_OFFSET_HOURS);
         const dayEndUTC = new Date(dayStartUTC);
         dayEndUTC.setHours(dayStartUTC.getHours() + 23, 59, 59, 999);
-        
+
+        // Validar existencia
         const existingCheck = await db.collection(SHIFTS_COLLECTION)
             .where('objectiveId', '==', objectiveId)
             .where('startTime', '>=', admin.firestore.Timestamp.fromDate(dayStartUTC))
@@ -252,7 +251,6 @@ export class SchedulingService {
         if (existingCheck.empty) { skipped++; continue; }
 
         const existingShifts = existingCheck.docs.map(doc => ({ ref: doc.ref, data: doc.data() as IShift }));
-             
         const hasRealEmployees = existingShifts.some(s => s.data.employeeId !== 'VACANTE' && s.data.status !== 'Canceled');
         if (hasRealEmployees) { skipped++; continue; }
 
@@ -264,7 +262,7 @@ export class SchedulingService {
             
             const msFromStartOfDay = tStart.getTime() - startSource.getTime();
             const durationMs = tEnd.getTime() - tStart.getTime();
-            
+
             const newStart = new Date(dayStartUTC.getTime() + msFromStartOfDay);
             const newEnd = new Date(newStart.getTime() + durationMs);
 
@@ -272,7 +270,7 @@ export class SchedulingService {
             const newShift: IShift = {
                 id: newShiftRef.id,
                 objectiveId: objectiveId,
-                objectiveName: template.objectiveName,
+                objectiveName: realObjName, // 🛑 APLICAR NOMBRE REAL
                 employeeId: template.employeeId, 
                 employeeName: template.employeeName,
                 role: template.role || 'Vigilador',

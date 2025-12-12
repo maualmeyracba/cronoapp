@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 export type EmployeeRole = 'admin' | 'employee';
 export type ContractType = 'FullTime' | 'PartTime' | 'Eventual';
+export type LaborAgreement = 'SUVICO' | 'COMERCIO' | 'UOCRA' | 'FUERA_CONVENIO';
 export interface IEmployee {
     uid: string;
     name: string;
@@ -9,6 +10,7 @@ export interface IEmployee {
     isAvailable: boolean;
     maxHoursPerMonth: number;
     contractType: ContractType;
+    laborAgreement?: LaborAgreement;
     payrollCycleStartDay?: number;
     payrollCycleEndDay?: number;
     clientId?: string;

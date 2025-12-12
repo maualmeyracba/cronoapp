@@ -1,5 +1,4 @@
 import * as admin from 'firebase-admin';
-// 🛑 SDK SERVIDOR
 
 /**
  * @description Define los roles de usuario dentro del sistema.
@@ -10,6 +9,12 @@ export type EmployeeRole = 'admin' | 'employee';
  * @description Define los tipos de contrato laboral soportados.
  */
 export type ContractType = 'FullTime' | 'PartTime' | 'Eventual';
+
+/**
+ * 🛑 NUEVO: Convenios Colectivos soportados para reglas de negocio.
+ */
+export type LaborAgreement = 'SUVICO' | 'COMERCIO' | 'UOCRA' | 'FUERA_CONVENIO';
+
 /**
  * @description Interfaz de Colaborador (Versión Backend).
  */
@@ -20,12 +25,17 @@ export interface IEmployee {
   email: string;
   
   isAvailable: boolean;
+  
+  // Configuración Laboral
   maxHoursPerMonth: number;
   contractType: ContractType;
   
-  // 🛑 FIX CRÍTICO: Campos para el Ciclo de Nómina
-  payrollCycleStartDay?: number; // Día del mes en que comienza el ciclo (Ej: 15)
-  payrollCycleEndDay?: number;   // Día del mes en que finaliza el ciclo (Ej: 14)
+  // 🛑 NUEVO CAMPO: Convenio Colectivo
+  laborAgreement?: LaborAgreement; 
+  
+  // Campos para el Ciclo de Nómina
+  payrollCycleStartDay?: number; 
+  payrollCycleEndDay?: number;
   
   clientId?: string;
   businessUnitId?: string;
@@ -36,9 +46,6 @@ export interface IEmployee {
   phone?: string;
 }
 
-/**
- * @description Estructura de una ausencia en base de datos.
- */
 export interface IAbsence {
     id: string;
     employeeId: string;
@@ -52,9 +59,6 @@ export interface IAbsence {
     createdAt: admin.firestore.Timestamp;
 }
 
-/**
- * @description Payload recibido en las Cloud Functions.
- */
 export interface IAbsencePayload {
     employeeId: string;
     employeeName: string;

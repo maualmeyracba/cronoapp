@@ -13,6 +13,7 @@ import { EmployeeService } from './data-management/employee.service';
 import { SystemUserService } from './data-management/system-user.service';
 import { AbsenceService } from './data-management/absence.service';
 import { PatternService } from './scheduling/pattern.service';
+import { LaborAgreementService } from './data-management/labor-agreement.service';
 
 // Interfaces
 import { EmployeeRole } from './common/interfaces/employee.interface';
@@ -118,7 +119,6 @@ export const manageShifts = functions.https.onCall(async (data, context) => {
         await schedulingService.deleteShift(payload.id);
         return { success: true, message: 'Turno eliminado.' };
       
-      // REPLICACIÓN MASIVA (Clonar estructura)
       case 'REPLICATE_STRUCTURE':
         if (!payload.objectiveId || !payload.sourceDate || !payload.targetStartDate || !payload.targetEndDate) {
             throw new functions.https.HttpsError('invalid-argument', 'Faltan fechas para replicar.');
@@ -216,23 +216,19 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
     const clientService = await getService(ClientService);
 
     switch (action) {
-      // Clientes
       case 'CREATE_CLIENT': return { success: true, data: await clientService.createClient(payload) };
       case 'GET_CLIENT': return { success: true, data: await clientService.getClient(payload.id) };
       case 'GET_ALL_CLIENTS': return { success: true, data: await clientService.findAllClients() };
       case 'UPDATE_CLIENT': await clientService.updateClient(payload.id, payload.data); return { success: true, message: 'Cliente actualizado' };
       case 'DELETE_CLIENT': await clientService.deleteClient(payload.id); return { success: true, message: 'Cliente eliminado' };
 
-      // Objetivos (Edición/Borrado)
       case 'CREATE_OBJECTIVE': return { success: true, data: await clientService.createObjective(payload) };
       case 'UPDATE_OBJECTIVE': await clientService.updateObjective(payload.id, payload.data); return { success: true, message: 'Objetivo actualizado correctamente' };
       
-      // Contratos (Servicios)
       case 'CREATE_CONTRACT': return { success: true, data: await clientService.createServiceContract(payload) };
       case 'UPDATE_CONTRACT': await clientService.updateServiceContract(payload.id, payload.data); return { success: true, message: 'Servicio actualizado' };
       case 'DELETE_CONTRACT': await clientService.deleteServiceContract(payload.id); return { success: true, message: 'Servicio eliminado' };
 
-      // Modalidades (Tipos de Turno)
       case 'CREATE_SHIFT_TYPE': return { success: true, data: await clientService.createShiftType(payload) };
       case 'GET_SHIFT_TYPES': return { success: true, data: await clientService.getShiftTypesByContract(payload.contractId) };
       case 'UPDATE_SHIFT_TYPE': await clientService.updateShiftType(payload.id, payload.data); return { success: true, message: 'Modalidad actualizada' };
@@ -249,7 +245,7 @@ export const manageHierarchy = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 7. GESTIÓN DE EMPLEADOS (RRHH) - (INCLUYE REPORTE DE CARGA)
+// 7. GESTIÓN DE EMPLEADOS (RRHH) - (INCLUYE REPORTE DE CARGA Y IMPORTACIÓN)
 // =========================================================
 export const manageEmployees = functions.https.onCall(async (data, context) => {
   const callerAuth = context.auth;
@@ -265,7 +261,7 @@ export const manageEmployees = functions.https.onCall(async (data, context) => {
         const employees = await employeeService.findAllEmployees(payload?.clientId);
         return { success: true, data: employees };
         
-      case 'GET_WORKLOAD_REPORT': // 🛑 NUEVA ACCIÓN
+      case 'GET_WORKLOAD_REPORT':
         if (!payload.uid || !payload.month || !payload.year) {
             throw new functions.https.HttpsError('invalid-argument', 'Faltan parámetros (uid, month, year) para el reporte.');
         }
@@ -279,6 +275,14 @@ export const manageEmployees = functions.https.onCall(async (data, context) => {
       case 'DELETE_EMPLOYEE':
         await employeeService.deleteEmployee(payload.uid);
         return { success: true, message: 'Empleado eliminado.' };
+
+      // 🛑 NUEVO: IMPORTACIÓN MASIVA
+      case 'IMPORT_EMPLOYEES':
+        if (!payload.rows || !Array.isArray(payload.rows)) {
+             throw new functions.https.HttpsError('invalid-argument', 'Formato de archivo inválido. Se espera un array "rows".');
+        }
+        const importResult = await employeeService.importEmployees(payload.rows, callerAuth.uid);
+        return { success: true, data: importResult };
         
       default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
     }
@@ -412,7 +416,39 @@ export const managePatterns = functions.https.onCall(async (data, context) => {
 });
 
 // =========================================================
-// 11. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
+// 11. GESTIÓN DE CONVENIOS (NUEVO)
+// =========================================================
+export const manageAgreements = functions.https.onCall(async (data, context) => {
+    const callerAuth = context.auth;
+    if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role as string)) {
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+    }
+    
+    const { action, payload } = data as { action: string, payload: any };
+  
+    try {
+        const agreementService = await getService(LaborAgreementService);
+  
+        switch (action) {
+            case 'CREATE': return { success: true, data: await agreementService.create(payload) };
+            case 'GET_ALL': return { success: true, data: await agreementService.findAll() };
+            case 'UPDATE': await agreementService.update(payload.id, payload.data); return { success: true };
+            case 'DELETE': await agreementService.delete(payload.id); return { success: true };
+            // CARGA DE DATOS POR DEFECTO
+            case 'INITIALIZE_DEFAULTS': 
+                const msg = await agreementService.initializeDefaults();
+                return { success: true, message: msg };
+                
+            default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+        }
+    } catch (error: any) {
+        console.error(`[AGREEMENT_ERROR] Action ${action} failed:`, error.message);
+        throw new functions.https.HttpsError('internal', error.message);
+    }
+});
+
+// =========================================================
+// 12. DIAGNÓSTICO DE SISTEMA (HEALTH CHECK)
 // =========================================================
 export const checkSystemHealth = functions.https.onCall(async (data, context) => {
   if (!context.auth) {

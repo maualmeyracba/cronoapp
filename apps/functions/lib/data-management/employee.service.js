@@ -73,6 +73,65 @@ let EmployeeService = class EmployeeService {
             throw new common_1.InternalServerErrorException('Error al eliminar el empleado.');
         }
     }
+    async importEmployees(rows, adminUid) {
+        const db = this.getDb();
+        const auth = this.getAuth();
+        const errors = [];
+        let successCount = 0;
+        for (const row of rows) {
+            try {
+                if (!row.email || !row.dni || !row.name) {
+                    throw new Error(`Faltan datos (email, dni, nombre) para: ${row.name || 'Fila desconocida'}`);
+                }
+                const email = row.email.trim().toLowerCase();
+                const password = row.dni.trim();
+                let uid = '';
+                try {
+                    const userRecord = await auth.createUser({
+                        email,
+                        password,
+                        displayName: row.name,
+                        emailVerified: true
+                    });
+                    uid = userRecord.uid;
+                }
+                catch (e) {
+                    if (e.code === 'auth/email-already-exists') {
+                        const existingUser = await auth.getUserByEmail(email);
+                        uid = existingUser.uid;
+                    }
+                    else {
+                        throw e;
+                    }
+                }
+                await auth.setCustomUserClaims(uid, { role: 'employee' });
+                const employeeData = {
+                    uid,
+                    name: row.name,
+                    email: email,
+                    dni: row.dni,
+                    fileNumber: row.legajo || '',
+                    address: row.direccion || '',
+                    role: 'employee',
+                    isAvailable: true,
+                    laborAgreement: row.convenio || 'SUVICO',
+                    contractType: row.modalidad || 'FullTime',
+                    maxHoursPerMonth: Number(row.horas_mensuales) || 176,
+                    payrollCycleStartDay: Number(row.inicio_ciclo) || 1,
+                    payrollCycleEndDay: 0,
+                    createdAt: admin.firestore.Timestamp.now(),
+                    importedBy: adminUid
+                };
+                await db.collection(COLL_EMPLOYEES).doc(uid).set(employeeData, { merge: true });
+                successCount++;
+            }
+            catch (error) {
+                console.error(`Error importando ${row.email}:`, error.message);
+                errors.push({ email: row.email, error: error.message });
+            }
+        }
+        return { success: successCount, errors };
+    }
 };
 exports.EmployeeService = EmployeeService;
 exports.EmployeeService = EmployeeService = __decorate([

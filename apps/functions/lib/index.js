@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.checkSystemHealth = exports.managePatterns = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.manageShifts = exports.scheduleShift = exports.createUser = void 0;
+exports.checkSystemHealth = exports.manageAgreements = exports.managePatterns = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.manageShifts = exports.scheduleShift = exports.createUser = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const main_1 = require("./main");
@@ -13,6 +13,7 @@ const employee_service_1 = require("./data-management/employee.service");
 const system_user_service_1 = require("./data-management/system-user.service");
 const absence_service_1 = require("./data-management/absence.service");
 const pattern_service_1 = require("./scheduling/pattern.service");
+const labor_agreement_service_1 = require("./data-management/labor-agreement.service");
 if (!admin.apps.length) {
     admin.initializeApp();
 }
@@ -216,6 +217,12 @@ exports.manageEmployees = functions.https.onCall(async (data, context) => {
             case 'DELETE_EMPLOYEE':
                 await employeeService.deleteEmployee(payload.uid);
                 return { success: true, message: 'Empleado eliminado.' };
+            case 'IMPORT_EMPLOYEES':
+                if (!payload.rows || !Array.isArray(payload.rows)) {
+                    throw new functions.https.HttpsError('invalid-argument', 'Formato de archivo inválido. Se espera un array "rows".');
+                }
+                const importResult = await employeeService.importEmployees(payload.rows, callerAuth.uid);
+                return { success: true, data: importResult };
             default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
         }
     }
@@ -316,6 +323,34 @@ exports.managePatterns = functions.https.onCall(async (data, context) => {
     }
     catch (error) {
         console.error(`[PATTERN_ERROR] Action ${action} failed:`, error.message);
+        throw new functions.https.HttpsError('internal', error.message);
+    }
+});
+exports.manageAgreements = functions.https.onCall(async (data, context) => {
+    const callerAuth = context.auth;
+    if (!callerAuth || !ADMIN_ROLES.includes(callerAuth.token.role)) {
+        throw new functions.https.HttpsError('permission-denied', 'Acceso denegado.');
+    }
+    const { action, payload } = data;
+    try {
+        const agreementService = await getService(labor_agreement_service_1.LaborAgreementService);
+        switch (action) {
+            case 'CREATE': return { success: true, data: await agreementService.create(payload) };
+            case 'GET_ALL': return { success: true, data: await agreementService.findAll() };
+            case 'UPDATE':
+                await agreementService.update(payload.id, payload.data);
+                return { success: true };
+            case 'DELETE':
+                await agreementService.delete(payload.id);
+                return { success: true };
+            case 'INITIALIZE_DEFAULTS':
+                const msg = await agreementService.initializeDefaults();
+                return { success: true, message: msg };
+            default: throw new functions.https.HttpsError('invalid-argument', `Acción desconocida: ${action}`);
+        }
+    }
+    catch (error) {
+        console.error(`[AGREEMENT_ERROR] Action ${action} failed:`, error.message);
         throw new functions.https.HttpsError('internal', error.message);
     }
 });

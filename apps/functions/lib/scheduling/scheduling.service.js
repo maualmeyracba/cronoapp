@@ -17,6 +17,7 @@ const workload_service_1 = require("./workload.service");
 const functions = require("firebase-functions");
 const SHIFTS_COLLECTION = 'turnos';
 const ABSENCES_COLLECTION = 'ausencias';
+const OBJECTIVES_COLLECTION = 'objetivos';
 let SchedulingService = class SchedulingService {
     constructor(overlapService, workloadService) {
         this.overlapService = overlapService;
@@ -44,10 +45,10 @@ let SchedulingService = class SchedulingService {
             .get();
         if (absencesSnap.empty)
             return;
-        const conflict = absencesSnap.docs.find(doc => {
+        absencesSnap.docs.forEach(doc => {
             const data = doc.data();
             if (data.status === 'REJECTED' || data.status === 'CANCELLED')
-                return false;
+                return;
             const absStart = this.convertToDate(data.startDate);
             const absEnd = this.convertToDate(data.endDate);
             if (shiftStart.getTime() < absEnd.getTime() && shiftEnd.getTime() > absStart.getTime()) {
@@ -55,7 +56,6 @@ let SchedulingService = class SchedulingService {
                     data.type === 'VACATION' ? 'VACACIONES' : 'AUSENCIA';
                 throw new functions.https.HttpsError('failed-precondition', `⛔ BLOQUEO: El empleado tiene una ${type} vigente en esa fecha.`);
             }
-            return false;
         });
     }
     async assignShift(shiftData, userAuth) {
@@ -76,6 +76,8 @@ let SchedulingService = class SchedulingService {
         const employeeId = shiftData.employeeId;
         if (newStart.getTime() >= newEnd.getTime())
             throw new common_1.BadRequestException('Horario inválido.');
+        const objDoc = await dbInstance.collection(OBJECTIVES_COLLECTION).doc(shiftData.objectiveId).get();
+        const realObjectiveName = objDoc.exists ? objDoc.data().name : (shiftData.objectiveName || 'Sede');
         await this.checkAbsenceConflict(employeeId, newStart, newEnd);
         let isOvertime = false;
         if (employeeId !== 'VACANTE') {
@@ -119,7 +121,7 @@ let SchedulingService = class SchedulingService {
                     employeeId,
                     objectiveId: shiftData.objectiveId,
                     employeeName: shiftData.employeeName || 'S/D',
-                    objectiveName: shiftData.objectiveName || 'S/D',
+                    objectiveName: realObjectiveName,
                     startTime: admin.firestore.Timestamp.fromDate(newStart),
                     endTime: admin.firestore.Timestamp.fromDate(newEnd),
                     status: 'Assigned',
@@ -130,7 +132,7 @@ let SchedulingService = class SchedulingService {
                 };
                 transaction.set(newShiftRef, finalShift);
             });
-            return { id: newShiftRef.id, ...shiftData };
+            return { id: newShiftRef.id, ...shiftData, objectiveName: realObjectiveName };
         }
         catch (error) {
             if (error instanceof functions.https.HttpsError)
@@ -197,6 +199,8 @@ let SchedulingService = class SchedulingService {
         if (sourceShiftsSnap.empty)
             throw new functions.https.HttpsError('not-found', 'El día origen no tiene turnos.');
         const sourceShifts = sourceShiftsSnap.docs.map(doc => doc.data()).filter(s => s.status !== 'Canceled');
+        const objDoc = await db.collection(OBJECTIVES_COLLECTION).doc(objectiveId).get();
+        const realObjName = objDoc.exists ? objDoc.data().name : sourceShifts[0].objectiveName;
         const batch = db.batch();
         let opCount = 0;
         let skipped = 0;
@@ -240,7 +244,7 @@ let SchedulingService = class SchedulingService {
                 const newShift = {
                     id: newShiftRef.id,
                     objectiveId: objectiveId,
-                    objectiveName: template.objectiveName,
+                    objectiveName: realObjName,
                     employeeId: template.employeeId,
                     employeeName: template.employeeName,
                     role: template.role || 'Vigilador',

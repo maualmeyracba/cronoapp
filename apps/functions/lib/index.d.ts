@@ -9,4 +9,5 @@ export declare const manageEmployees: functions.HttpsFunction & functions.Runnab
 export declare const manageSystemUsers: functions.HttpsFunction & functions.Runnable<any>;
 export declare const manageAbsences: functions.HttpsFunction & functions.Runnable<any>;
 export declare const managePatterns: functions.HttpsFunction & functions.Runnable<any>;
+export declare const manageAgreements: functions.HttpsFunction & functions.Runnable<any>;
 export declare const checkSystemHealth: functions.HttpsFunction & functions.Runnable<any>;

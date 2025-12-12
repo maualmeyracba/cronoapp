@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { IServicePattern, IPatternPayload } from '../common/interfaces/service-pattern.interface';
-import { IShiftType } from '../common/interfaces/client.interface';
+import { IShiftType, IObjective } from '../common/interfaces/client.interface'; // 🛑 Agregada IObjective
 
 const PATTERNS_COLLECTION = 'patrones_servicio';
 const SHIFTS_COLLECTION = 'turnos';
 const SHIFT_TYPES_COLLECTION = 'tipos_turno';
+const OBJECTIVES_COLLECTION = 'objetivos'; // 🛑 Nueva constante
 
 @Injectable()
 export class PatternService {
@@ -16,7 +17,6 @@ export class PatternService {
 
   async createPattern(payload: IPatternPayload, userId: string): Promise<IServicePattern> {
     const db = this.getDb();
-    
     const existingSnap = await db.collection(PATTERNS_COLLECTION)
         .where('contractId', '==', payload.contractId)
         .where('shiftTypeId', '==', payload.shiftTypeId)
@@ -68,10 +68,15 @@ export class PatternService {
       await this.getDb().collection(PATTERNS_COLLECTION).doc(id).delete();
   }
 
-  // --- 2. EL GENERADOR (CORREGIDO HUSO HORARIO ARGENTINA) ---
+  // --- 2. EL GENERADOR (CORREGIDO CON NOMBRE REAL) ---
 
   async generateVacancies(contractId: string, month: number, year: number, objectiveId: string): Promise<{ created: number, message: string }> {
     const db = this.getDb();
+    
+    // 🛑 1. BUSCAR NOMBRE DEL OBJETIVO
+    const objDoc = await db.collection(OBJECTIVES_COLLECTION).doc(objectiveId).get();
+    const objectiveName = objDoc.exists ? (objDoc.data() as IObjective).name : 'Sede';
+
     const patterns = await this.getPatternsByContract(contractId);
     if (patterns.length === 0) return { created: 0, message: 'No hay patrones definidos.' };
 
@@ -105,13 +110,10 @@ export class PatternService {
 
                 for (let i = 0; i < pattern.quantityPerDay; i++) {
                     const newShiftRef = db.collection(SHIFTS_COLLECTION).doc();
-
-                    // 🛑 FIX: Forzamos Zona Horaria -03:00 (Argentina)
-                    // Esto hace que "06:00" en el string se guarde como 09:00 UTC,
-                    // que al leerse en el navegador (Argentina) volverá a ser 06:00.
+                    
+                    // Zona Horaria Argentina (-3)
                     const startISO = `${dateStr}T${shiftType.startTime}:00-03:00`;
                     const startObj = new Date(startISO);
-                    
                     const endObj = new Date(startObj.getTime() + (shiftType.durationHours * 60 * 60 * 1000));
 
                     const vacancy = {
@@ -119,7 +121,7 @@ export class PatternService {
                         employeeId: 'VACANTE', 
                         employeeName: 'VACANTE',
                         objectiveId: objectiveId,
-                        objectiveName: 'Sede', 
+                        objectiveName: objectiveName, // 🛑 USAMOS EL NOMBRE REAL
                         startTime: admin.firestore.Timestamp.fromDate(startObj),
                         endTime: admin.firestore.Timestamp.fromDate(endObj),
                         status: 'Assigned', 
@@ -139,6 +141,7 @@ export class PatternService {
     }
 
     if (count > 0) await batch.commit();
+    
     return { 
         created: count, 
         message: count >= MAX_BATCH_SIZE ? `Límite de lote. ${count} vacantes.` : `¡Éxito! ${count} vacantes generadas.` 
@@ -150,7 +153,7 @@ export class PatternService {
       const db = this.getDb();
       const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
       const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59));
-      
+
       const snapshot = await db.collection(SHIFTS_COLLECTION)
           .where('objectiveId', '==', objectiveId)
           .where('employeeId', '==', 'VACANTE')

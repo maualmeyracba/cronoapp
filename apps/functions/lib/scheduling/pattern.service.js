@@ -12,6 +12,7 @@ const admin = require("firebase-admin");
 const PATTERNS_COLLECTION = 'patrones_servicio';
 const SHIFTS_COLLECTION = 'turnos';
 const SHIFT_TYPES_COLLECTION = 'tipos_turno';
+const OBJECTIVES_COLLECTION = 'objetivos';
 let PatternService = class PatternService {
     constructor() {
         this.getDb = () => admin.app().firestore();
@@ -66,6 +67,8 @@ let PatternService = class PatternService {
     }
     async generateVacancies(contractId, month, year, objectiveId) {
         const db = this.getDb();
+        const objDoc = await db.collection(OBJECTIVES_COLLECTION).doc(objectiveId).get();
+        const objectiveName = objDoc.exists ? objDoc.data().name : 'Sede';
         const patterns = await this.getPatternsByContract(contractId);
         if (patterns.length === 0)
             return { created: 0, message: 'No hay patrones definidos.' };
@@ -103,7 +106,7 @@ let PatternService = class PatternService {
                             employeeId: 'VACANTE',
                             employeeName: 'VACANTE',
                             objectiveId: objectiveId,
-                            objectiveName: 'Sede',
+                            objectiveName: objectiveName,
                             startTime: admin.firestore.Timestamp.fromDate(startObj),
                             endTime: admin.firestore.Timestamp.fromDate(endObj),
                             status: 'Assigned',

@@ -30,14 +30,10 @@ export class EmployeeService {
   }
 
   async getEmployeeWorkload(uid: string, month: number, year: number): Promise<any> {
-    // Reutiliza la lógica de reporte actualizada
     const report = await this.workloadService.getWorkloadReport(uid, month, year);
     return report;
   }
 
-  /**
-   * Actualiza los datos de un empleado, incluyendo los días de ciclo de nómina.
-   */
   async updateEmployee(uid: string, data: Partial<IEmployee>): Promise<void> {
       const db = this.getDb();
       const auth = this.getAuth();
@@ -47,7 +43,6 @@ export class EmployeeService {
           throw new NotFoundException('Empleado no encontrado.');
       }
 
-      // Asegurar que los días de ciclo sean números
       const updateData: any = { ...data };
       if (updateData.payrollCycleStartDay !== undefined) updateData.payrollCycleStartDay = Number(updateData.payrollCycleStartDay);
       if (updateData.payrollCycleEndDay !== undefined) updateData.payrollCycleEndDay = Number(updateData.payrollCycleEndDay);
@@ -73,5 +68,82 @@ export class EmployeeService {
         console.error('[DELETE_EMPLOYEE_ERROR]', error);
         throw new InternalServerErrorException('Error al eliminar el empleado.');
     }
+  }
+
+  // 🛑 NUEVO: IMPORTACIÓN MASIVA
+  async importEmployees(rows: any[], adminUid: string): Promise<{ success: number, errors: any[] }> {
+      const db = this.getDb();
+      const auth = this.getAuth();
+      const errors = [];
+      let successCount = 0;
+
+      for (const row of rows) {
+          try {
+              if (!row.email || !row.dni || !row.name) {
+                  throw new Error(`Faltan datos (email, dni, nombre) para: ${row.name || 'Fila desconocida'}`);
+              }
+
+              const email = row.email.trim().toLowerCase();
+              // 🔑 La contraseña inicial es el DNI
+              const password = row.dni.trim(); 
+              
+              let uid = '';
+              
+              // 1. Crear o Recuperar Usuario en Auth
+              try {
+                  const userRecord = await auth.createUser({
+                      email,
+                      password,
+                      displayName: row.name,
+                      emailVerified: true
+                  });
+                  uid = userRecord.uid;
+              } catch (e: any) {
+                  if (e.code === 'auth/email-already-exists') {
+                      const existingUser = await auth.getUserByEmail(email);
+                      uid = existingUser.uid;
+                  } else {
+                      throw e;
+                  }
+              }
+
+              // 2. Asignar Rol
+              await auth.setCustomUserClaims(uid, { role: 'employee' });
+
+              // 3. Preparar Datos para Firestore
+              const employeeData: any = {
+                  uid,
+                  name: row.name,
+                  email: email,
+                  dni: row.dni,
+                  fileNumber: row.legajo || '',
+                  address: row.direccion || '',
+                  role: 'employee',
+                  isAvailable: true,
+                  
+                  // Asignación de Reglas (con defaults)
+                  laborAgreement: row.convenio || 'SUVICO',
+                  contractType: row.modalidad || 'FullTime',
+                  maxHoursPerMonth: Number(row.horas_mensuales) || 176,
+                  
+                  // Ciclo de Nómina
+                  payrollCycleStartDay: Number(row.inicio_ciclo) || 1,
+                  payrollCycleEndDay: 0, // 0 = fin de mes automático, o calcular si es necesario
+
+                  createdAt: admin.firestore.Timestamp.now(),
+                  importedBy: adminUid
+              };
+
+              // 4. Guardar Ficha (Merge para no borrar datos si ya existía)
+              await db.collection(COLL_EMPLOYEES).doc(uid).set(employeeData, { merge: true });
+              successCount++;
+
+          } catch (error: any) {
+              console.error(`Error importando ${row.email}:`, error.message);
+              errors.push({ email: row.email, error: error.message });
+          }
+      }
+
+      return { success: successCount, errors };
   }
 }

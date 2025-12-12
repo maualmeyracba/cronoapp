@@ -13,6 +13,7 @@ const client_service_1 = require("./client.service");
 const employee_service_1 = require("./employee.service");
 const system_user_service_1 = require("./system-user.service");
 const absence_service_1 = require("./absence.service");
+const labor_agreement_service_1 = require("./labor-agreement.service");
 const scheduling_module_1 = require("../scheduling/scheduling.module");
 let DataManagementModule = class DataManagementModule {
 };
@@ -27,14 +28,16 @@ exports.DataManagementModule = DataManagementModule = __decorate([
             client_service_1.ClientService,
             employee_service_1.EmployeeService,
             system_user_service_1.SystemUserService,
-            absence_service_1.AbsenceService
+            absence_service_1.AbsenceService,
+            labor_agreement_service_1.LaborAgreementService
         ],
         exports: [
             data_management_service_1.DataManagementService,
             client_service_1.ClientService,
             employee_service_1.EmployeeService,
             system_user_service_1.SystemUserService,
-            absence_service_1.AbsenceService
+            absence_service_1.AbsenceService,
+            labor_agreement_service_1.LaborAgreementService
         ],
     })
 ], DataManagementModule);

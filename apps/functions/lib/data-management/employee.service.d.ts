@@ -9,4 +9,8 @@ export declare class EmployeeService {
     getEmployeeWorkload(uid: string, month: number, year: number): Promise<any>;
     updateEmployee(uid: string, data: Partial<IEmployee>): Promise<void>;
     deleteEmployee(uid: string): Promise<void>;
+    importEmployees(rows: any[], adminUid: string): Promise<{
+        success: number;
+        errors: any[];
+    }>;
 }

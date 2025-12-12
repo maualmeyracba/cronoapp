@@ -1,5 +1,5 @@
 AUDITORÍA DE PROYECTO CONTROL DATA
-Fecha: 2025-12-10T17:30:06.478Z
+Fecha: 2025-12-11T13:28:32.273Z
 ----------------------------------------
 
 
@@ -4596,6 +4596,27 @@ function OperatorMapPage() {
 export default withAuthGuard(OperatorMapPage, ['admin', 'manager', 'operator', 'supervisor']);
 
 ================================================================================
+FILE: apps\web\pages\admin\planning\gantt.tsx
+================================================================================
+import React from 'react';
+import { withAuthGuard } from '@/components/common/withAuthGuard';
+import DashboardLayout from '@/components/layout/DashboardLayout';
+import { GanttPlanningView } from '@/components/admin/planning/GanttPlanningView';
+
+function GanttPage() {
+    return (
+        <DashboardLayout title="Planificación de Recursos (Gantt)">
+            <div className="p-4 h-full">
+                <GanttPlanningView />
+            </div>
+        </DashboardLayout>
+    );
+}
+
+// Proteger la ruta
+export default withAuthGuard(GanttPage, ['admin', 'scheduler', 'manager']);
+
+================================================================================
 FILE: apps\web\pages\admin\rrhh\novedades.tsx
 ================================================================================
 // Archivo: pages/admin/rrhh/novedades.tsx
@@ -7165,497 +7186,1138 @@ export function ObjectiveManagement() {
 export default ObjectiveManagement;
 
 ================================================================================
-FILE: apps\web\src\components\admin\scheduler.tsx
+FILE: apps\web\src\components\admin\planning\GanttPlanningView.tsx
 ================================================================================
-import React, { useReducer, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
-  format, 
-  addMonths, 
-  subMonths, 
-  startOfMonth, 
-  endOfMonth, 
-  startOfWeek, 
-  endOfWeek, 
-  isSameDay, 
-  addDays,
-  subDays,
-  parseISO, 
-  setHours, 
-  setMinutes,
-  differenceInMinutes,
-  addMinutes
+    format, addDays, 
+    eachDayOfInterval, isSameDay, differenceInMinutes, 
+    startOfDay 
 } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { 
-  ChevronLeft, 
-  ChevronRight, 
-  Clock,
-  Lock,
-  Zap 
+    ChevronLeft, ChevronRight, Search, Zap, Loader2, 
+    ZoomIn, ZoomOut, X, Clock, User, MapPin, CheckCircle2 
 } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { collection, query, where, getDocs, Timestamp } from 'firebase/firestore';
+import { db, callManageData } from '@/services/firebase-client.service';
+import { useClient } from '@/context/ClientContext';
+import { IObjective } from '@/common/interfaces/client.interface';
+import { IShift } from '@/common/interfaces/shift.interface';
 
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-// 🛑 AÑADIDO: VISTA TIMELINE
-export type ViewType = 'month' | 'week' | 'day' | 'timeline';
-
-export interface SchedulerEvent {
-  id: string;
-  title: string;
-  description?: string;
-  start: Date | string;
-  end: Date | string;
-  color?: string;
-  originalData?: any;
-}
-
-interface SchedulerState {
-  currentDate: Date;
-  view: ViewType;
-}
-
-type SchedulerAction = 
-  | { type: 'SET_VIEW'; payload: ViewType }
-  | { type: 'NAVIGATE_NEXT' }
-  | { type: 'NAVIGATE_PREV' }
-  | { type: 'NAVIGATE_TODAY' }
-  | { type: 'SET_DATE'; payload: Date };
-
-interface SchedulerProps {
-  events: SchedulerEvent[];
-  isLoading?: boolean;
-  onEventClick?: (event: SchedulerEvent) => void;
-  onDropInfo?: (data: { employeeId: string, employeeName: string, start?: Date, end?: Date, targetShiftId?: string }) => void;
-  onEventMove?: (event: SchedulerEvent, newStart: Date, newEnd: Date) => void;
-  onDateChange?: (date: Date) => void;
-  onViewChange?: (view: ViewType) => void;
-  startHour?: number;
-  endHour?: number;
-  readOnly?: boolean;
-}
-
-const CELL_HEIGHT = 60; 
-
-const schedulerReducer = (state: SchedulerState, action: SchedulerAction): SchedulerState => {
-  switch (action.type) {
-    case 'SET_VIEW': return { ...state, view: action.payload };
-    case 'NAVIGATE_NEXT': {
-      const { view, currentDate } = state;
-      let nextDate;
-      switch(view) { 
-        case 'month': nextDate = addMonths(currentDate, 1); break;
-        case 'week': nextDate = addDays(currentDate, 7); break;
-        case 'day': nextDate = addDays(currentDate, 1); break;
-        case 'timeline': nextDate = addDays(currentDate, 14); break; 
-        default: nextDate = addDays(currentDate, 7);
-      }
-      return { ...state, currentDate: nextDate };
-    }
-    case 'NAVIGATE_PREV': {
-      const { view, currentDate } = state;
-      let prevDate;
-      switch(view) { 
-        case 'month': prevDate = subMonths(currentDate, 1); break;
-        case 'week': prevDate = addDays(currentDate, -7); break;
-        case 'day': prevDate = addDays(currentDate, -1); break;
-        case 'timeline': prevDate = addDays(currentDate, -14); break; 
-        default: prevDate = addDays(currentDate, -7);
-      }
-      return { ...state, currentDate: prevDate };
-    }
-    case 'NAVIGATE_TODAY': return { ...state, currentDate: new Date() };
-    case 'SET_DATE': return { ...state, currentDate: action.payload };
-    default: return state;
-  }
-};
-
-const Scheduler: React.FC<SchedulerProps> = ({ 
-  events = [], 
-  isLoading = false, 
-  onEventClick, 
-  onDropInfo, 
-  onEventMove,
-  onDateChange,
-  onViewChange,
-  startHour = 0, 
-  endHour = 24,
-  readOnly = false
-}) => {
-  
-  const [state, dispatch] = useReducer(schedulerReducer, { currentDate: new Date(), view: 'week' });
-
-  useEffect(() => { if (onDateChange) onDateChange(state.currentDate); }, [state.currentDate, onDateChange]);
-  useEffect(() => { if (onViewChange) onViewChange(state.view); }, [state.view, onViewChange]);
-
-  const normalizedEvents = useMemo(() => {
-    return events.map(evt => ({
-      ...evt,
-      start: typeof evt.start === 'string' ? parseISO(evt.start) : evt.start,
-      end: typeof evt.end === 'string' ? parseISO(evt.end) : evt.end,
-    }));
-  }, [events]);
-
-  // --- HANDLERS ---
-
-  const handleSlotDrop = (e: React.DragEvent, day: Date, hour: number) => {
-      e.preventDefault();
-      if (readOnly) return;
-
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const offsetY = e.clientY - rect.top;
-      const minutesAdded = Math.floor((offsetY / CELL_HEIGHT) * 60);
-      const roundedMinutes = Math.round(minutesAdded / 15) * 15; 
-
-      const newStart = new Date(day);
-      newStart.setHours(hour, roundedMinutes, 0, 0);
-
-      const movedShiftId = e.dataTransfer.getData("shiftId");
-      if (movedShiftId && onEventMove) {
-          const shift = normalizedEvents.find(s => s.id === movedShiftId);
-          if (shift) {
-              const durationMs = (shift.end as Date).getTime() - (shift.start as Date).getTime();
-              const newEnd = new Date(newStart.getTime() + durationMs);
-              onEventMove(shift, newStart, newEnd);
-          }
-          return;
-      }
-
-      const employeeId = e.dataTransfer.getData("employeeId");
-      const employeeName = e.dataTransfer.getData("employeeName");
-      if (employeeId && onDropInfo) {
-          const end = addMinutes(newStart, 480); 
-          onDropInfo({ employeeId, employeeName, start: newStart, end });
-      }
-  };
-
-  const handleEventDrop = (e: React.DragEvent, targetEvent: SchedulerEvent) => {
-      e.preventDefault();
-      e.stopPropagation(); 
-      if (readOnly) return;
-
-      const employeeId = e.dataTransfer.getData("employeeId");
-      const employeeName = e.dataTransfer.getData("employeeName");
-
-      if (employeeId && onDropInfo) {
-          onDropInfo({ 
-              employeeId, 
-              employeeName, 
-              targetShiftId: targetEvent.id 
-          });
-      }
-  };
-
-  // 🛑 LÓGICA DE FETCHING (Base para el rango de fechas)
-  const fetchEvents = useCallback(async () => {
-        let start, end;
-        
-        switch (state.view) {
-            case 'month':
-                start = startOfWeek(startOfMonth(state.currentDate), { weekStartsOn: 1 });
-                end = endOfWeek(endOfMonth(state.currentDate), { weekStartsOn: 1 });
-                break;
-            case 'week':
-            case 'day':
-            case 'timeline':
-            default:
-                // Rango de fechas amplio para asegurar cobertura en TimeGrid/Timeline
-                start = subDays(startOfWeek(state.currentDate, { weekStartsOn: 1 }), 1); 
-                end = addDays(endOfWeek(state.currentDate, { weekStartsOn: 1 }), state.view === 'timeline' ? 7 : 0); 
-                break;
-        }
-
-        // Si usas props, llama al handler del padre
-        if (onDateChange) onDateChange(state.currentDate);
-        if (onViewChange) onViewChange(state.view);
-
-        // Llama a la función de fetch del padre si está disponible
-        // if (onFetchEvents) onFetchEvents(start, end);
-
-    }, [state.currentDate, state.view, onDateChange, onViewChange]);
-
-    useEffect(() => {
-        fetchEvents();
-    }, [fetchEvents]);
+export function GanttPlanningView() {
+    const { selectedClientId } = useClient();
     
-    // 🛑 FIX: FUNCIÓN MOVIDA AQUI PARA EL ALCANCE CORRECTO
-    const getHeaderLabel = () => {
-        switch (state.view) {
-            case 'month':
-                return format(state.currentDate, 'MMMM yyyy', { locale: es });
-            case 'week':
-            case 'day':
-            case 'timeline':
-                const start = startOfWeek(state.currentDate, { weekStartsOn: 1 });
-                const end = endOfWeek(state.currentDate, { weekStartsOn: 1 });
-                if (format(start, 'yyyy') !== format(end, 'yyyy')) {
-                     return `${format(start, 'MMM dd yyyy', { locale: es })} - ${format(end, 'MMM dd yyyy', { locale: es })}`;
-                }
-                return `${format(start, 'MMM dd', { locale: es })} - ${format(end, 'MMM dd yyyy', { locale: es })}`;
-            default:
-                return format(state.currentDate, 'MMMM yyyy', { locale: es });
-        }
+    // Estado de Datos
+    const [currentDate, setCurrentDate] = useState(new Date());
+    const [objectives, setObjectives] = useState<IObjective[]>([]);
+    const [shifts, setShifts] = useState<IShift[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+
+    // Estado de UI (Zoom y Modal)
+    const [cellWidth, setCellWidth] = useState(180); // Ancho base más grande por día
+    const [selectedShift, setSelectedShift] = useState<IShift | null>(null);
+
+    // Constantes
+    const DAYS_TO_SHOW = 14; 
+
+    // Helper de fechas
+    const safeDate = (val: any): Date => {
+        if (!val) return new Date();
+        if (val.toDate && typeof val.toDate === 'function') return val.toDate();
+        if (val.seconds) return new Date(val.seconds * 1000);
+        if (typeof val === 'string') return new Date(val);
+        return new Date(val);
     };
 
+    // 1. Cargar Datos
+    const fetchData = useCallback(async () => {
+        setLoading(true);
+        try {
+            const payload = selectedClientId ? { clientId: selectedClientId } : {};
+            const objRes = await callManageData({ action: 'GET_ALL_OBJECTIVES', payload });
+            const loadedObjs = (objRes.data as any).data as IObjective[];
+            setObjectives(loadedObjs || []);
 
-  // --- 🛑 VISTA 1: CALENDARIO MENSUAL ---
-  const renderMonthView = () => {
-    const monthStart = startOfMonth(state.currentDate);
-    const monthEnd = endOfMonth(monthStart);
-    const startDate = startOfWeek(monthStart, { weekStartsOn: 1 });
-    const endDate = endOfWeek(monthEnd, { weekStartsOn: 1 });
-    
-    let days: React.ReactNode[] = []; 
-    let day = startDate;
-    const rows = [];
+            if (loadedObjs && loadedObjs.length > 0) {
+                const startDate = startOfDay(currentDate);
+                const endDate = addDays(startDate, DAYS_TO_SHOW);
+                
+                // Limitamos query para evitar errores, idealmente paginar o filtrar por zona
+                const targetIds = loadedObjs.slice(0, 15).map(o => o.id);
+                
+                if (targetIds.length > 0) {
+                    const shiftsRef = collection(db, 'turnos');
+                    const q = query(
+                        shiftsRef,
+                        where('objectiveId', 'in', targetIds),
+                        where('startTime', '>=', Timestamp.fromDate(startDate)),
+                        where('startTime', '<=', Timestamp.fromDate(endDate))
+                    );
 
-    while (day <= endDate) {
-        for (let i = 0; i < 7; i++) {
-            const cloneDay = day;
-            const isToday = isSameDay(day, new Date());
-            const dayEvents = normalizedEvents
-                .filter(e => isSameDay(e.start as Date, cloneDay))
-                .sort((a, b) => (a.start as Date).getTime() - (b.start as Date).getTime());
-            
-            days.push(
-                <div 
-                    key={day.toISOString()} 
-                    className={cn(
-                        "min-h-[100px] border-b border-r border-gray-100 p-1 relative transition-colors",
-                        !isSameDay(day, monthStart) && day.getMonth() !== monthStart.getMonth() ? "bg-gray-50/30 text-gray-400" : "",
-                        !readOnly && "hover:bg-gray-50"
-                    )}
-                    onClick={() => dispatch({ type: 'SET_DATE', payload: cloneDay })}
-                    onDragOver={!readOnly ? (e) => e.preventDefault() : undefined}
-                    onDrop={!readOnly ? (e) => {
-                        const employeeId = e.dataTransfer.getData("employeeId");
-                        const employeeName = e.dataTransfer.getData("employeeName");
-                        if (employeeId && onDropInfo) {
-                            const start = setHours(cloneDay, 9);
-                            const end = setHours(cloneDay, 17);
-                            onDropInfo({ employeeId, employeeName, start, end });
-                        }
-                    } : undefined}
-                >
-                    <div className="flex justify-between items-center mb-1">
-                       <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-indigo-600 text-white" : "")}>
-                         {format(day, 'd')}
-                       </span>
-                    </div>
-                    <div className="flex flex-col gap-1 overflow-hidden max-h-[80px]">
-                        {dayEvents.slice(0, 4).map(evt => (
-                            <div 
-                                key={evt.id} 
-                                onClick={(e) => { e.stopPropagation(); onEventClick?.(evt); }} 
-                                className={cn("text-[10px] px-1 rounded truncate cursor-pointer flex items-center gap-1", evt.color || "bg-blue-100 text-blue-800")}
-                                title={evt.title}
-                                draggable={!readOnly}
-                                onDragStart={!readOnly ? (e) => {
-                                    e.dataTransfer.setData("shiftId", evt.id);
-                                    e.dataTransfer.effectAllowed = "move";
-                                } : undefined}
-                                onDragOver={!readOnly ? (e) => e.preventDefault() : undefined}
-                                onDrop={!readOnly ? (e) => handleEventDrop(e, evt) : undefined}
-                            >
-                                {readOnly && <Lock size={8} className="opacity-50"/>}
-                                {format(evt.start as Date, 'HH:mm')} {evt.title}
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            );
-            day = addDays(day, 1);
-        }
-        rows.push(<div className="grid grid-cols-7" key={day.toISOString()}>{days}</div>);
-        days = []; 
-    }
-    return <div className="border-l border-t border-gray-200">{rows}</div>;
-  };
+                    const snapshot = await getDocs(q);
+                    const loadedShifts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as IShift[];
+                    setShifts(loadedShifts);
+                }
+            } else {
+                setShifts([]);
+            }
+        } catch (error) {
+            console.error("Error cargando Gantt:", error);
+        } finally {
+            setLoading(false);
+        }
+    }, [selectedClientId, currentDate]);
 
-  // --- 🛑 VISTA 2: TIME GRID (SEMANAL/DIARIO) ---
-  const renderTimeGrid = () => {
-    let daysToShow = state.view === 'week' 
-        ? Array.from({ length: 7 }).map((_, i) => addDays(startOfWeek(state.currentDate, { weekStartsOn: 1 }), i))
-        : [state.currentDate];
+    useEffect(() => { fetchData(); }, [fetchData]);
 
-    const hours = Array.from({ length: endHour - startHour }).map((_, i) => startHour + i);
+    // 2. Generar Días
+    const days = eachDayOfInterval({
+        start: startOfDay(currentDate),
+        end: addDays(startOfDay(currentDate), DAYS_TO_SHOW - 1)
+    });
 
-    return (
-      <div className="flex flex-col h-full bg-white relative overflow-hidden">
-        <div className="flex border-b border-gray-200 ml-14">
-          {daysToShow.map(day => {
-            const isToday = isSameDay(day, new Date());
-            return (
-              <div key={day.toISOString()} className="flex-1 py-2 text-center border-r border-gray-100">
-                <div className={cn("text-xs uppercase font-bold", isToday ? "text-indigo-600" : "text-gray-500")}>{format(day, 'EEE', { locale: es })}</div>
-                <div className={cn("text-lg font-bold", isToday ? "text-indigo-600" : "text-gray-800")}>{format(day, 'd')}</div>
-              </div>
-            );
-          })}
-        </div>
+    const filteredObjectives = objectives.filter(o => 
+        o.name.toLowerCase().includes(searchTerm.toLowerCase())
+    );
 
-        <div className="flex-1 overflow-y-auto relative flex">
-          <div className="w-14 flex-shrink-0 bg-gray-50 border-r border-gray-200 sticky left-0 z-10 select-none">
-            {hours.map(h => {
-              const timeLabel = setMinutes(setHours(new Date(), h), 0);
-              return (
-                <div key={h} className="border-b border-gray-100 text-[10px] text-gray-400 text-right pr-2 pt-1 relative" style={{ height: CELL_HEIGHT }}>
-                  <span className="-top-2 relative">{format(timeLabel, 'HH:mm')}</span>
-                </div>
-              );
-            })}
-          </div>
+    // 3. Estilos Dinámicos (Zoom)
+    const getShiftStyle = (shift: IShift) => {
+        const start = safeDate(shift.startTime);
+        const end = safeDate(shift.endTime);
+        const viewStart = startOfDay(currentDate);
 
-          <div className="flex-1 flex relative min-w-[600px]">
-            <div className="absolute inset-0 flex flex-col z-0">
-               {hours.map(h => <div key={h} className="w-full border-b border-gray-100" style={{ height: CELL_HEIGHT }}></div>)}
-            </div>
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
 
-            {daysToShow.map(day => {
-              const dayEvents = normalizedEvents.filter(e => isSameDay(e.start as Date, day));
-              return (
-                <div key={day.toISOString()} className="flex-1 border-r border-gray-100 relative h-full">
-                  
-                  {!readOnly && (
-                      <div className="absolute inset-0 z-0 flex flex-col">
-                          {hours.map(h => (
-                              <div 
-                                key={h} 
-                                style={{ height: CELL_HEIGHT }} 
-                                className="w-full transition-colors hover:bg-indigo-50/20"
-                                onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-                                onDrop={(e) => handleSlotDrop(e, day, h)}
-                              />
-                          ))}
-                      </div>
-                  )}
+        const startDiffMins = differenceInMinutes(start, viewStart);
+        const durationMins = differenceInMinutes(end, start);
+        
+        // Factor de Zoom: cellWidth px por 1440 minutos (1 día)
+        const pixelsPerMinute = cellWidth / 1440;
+        
+        const left = startDiffMins * pixelsPerMinute;
+        const width = durationMins * pixelsPerMinute;
 
-                  {dayEvents.map(evt => {
-                    const start = evt.start as Date;
-                    const end = evt.end as Date;
-                    
-                    const startH = start.getHours();
-                    const startM = start.getMinutes();
-                    
-                    if (end.getHours() < startHour) return null; 
-                    
-                    const minsFromTop = (Math.max(startH, startHour) - startHour) * 60 + startM;
-                    const top = Math.max(0, (minsFromTop / 60) * CELL_HEIGHT);
-                    const durationMins = differenceInMinutes(end, start);
-                    const height = (durationMins / 60) * CELL_HEIGHT;
+        if (left + width < 0) return null;
 
-                    return (
-                      <div
-                        key={evt.id}
-                        onClick={(e) => { e.stopPropagation(); onEventClick?.(evt); }}
-                        draggable={!readOnly}
-                        onDragStart={!readOnly ? (e) => {
-                            e.dataTransfer.setData("shiftId", evt.id);
-                            e.dataTransfer.effectAllowed = "move";
-                        } : undefined}
-                        onDragOver={!readOnly ? (e) => { 
-                            e.preventDefault(); 
-                            e.stopPropagation(); 
-                            e.dataTransfer.dropEffect = "copy"; 
-                        } : undefined} 
-                        onDrop={!readOnly ? (e) => handleEventDrop(e, evt) : undefined} 
-                        
-                        className={cn(
-                            "absolute left-1 right-1 rounded border-l-4 p-1 shadow-sm cursor-pointer transition-all text-xs overflow-hidden group", 
-                            !readOnly && "hover:z-50 hover:brightness-95", 
-                            readOnly && "opacity-90", 
-                            evt.color || "bg-indigo-50 border-indigo-500"
-                        )}
-                        style={{ top: `${top}px`, height: `${Math.max(height, 24)}px` }}
-                        title={`${evt.title}`}
-                      >
-                        {readOnly && <Lock size={10} className="absolute top-1 right-1 text-gray-500 opacity-50"/>}
-                        <div className="font-bold truncate group-hover:whitespace-normal">{evt.title}</div>
-                        <div className="opacity-80 truncate text-[10px] flex items-center gap-1">
-                           <Clock size={10}/> {format(start, 'HH:mm')} - {format(end, 'HH:mm')}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    );
-  };
-    
-    // 🛑 VISTA 3: RENDER DEL TIMELINE (GANTT) - Mantenido como placeholder
-    const renderTimelineView = () => {
-        // Estructura para el nuevo renderizado
-        return (
-            <div className="flex flex-col h-full overflow-auto">
-                {/* Encabezados de Día (Horizontal) */}
-                <div className="flex bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
-                    <div className="w-40 border-r p-2 text-xs font-bold text-gray-700 flex-shrink-0">Objetivo/Recurso</div>
-                    {/* Placeholder de Fechas (Debe ser dinámico) */}
-                    <div className="flex-1 flex border-r border-gray-100">
-                        {/* Mostramos un rango fijo de 7 días */}
-                        {Array.from({ length: 7 }).map((_, i) => (
-                             <div key={i} className="flex-1 py-2 text-center border-r border-gray-100 text-sm font-bold text-gray-600">
-                                {format(addDays(state.currentDate, i), 'EEE d/MMM', { locale: es })}
+        return {
+            left: `${left}px`,
+            width: `${Math.max(width, 4)}px`
+        };
+    };
+
+    // Controladores de Zoom
+    const handleZoomIn = () => setCellWidth(prev => Math.min(prev + 50, 600)); // Máx 600px por día
+    const handleZoomOut = () => setCellWidth(prev => Math.max(prev - 50, 60));  // Mín 60px por día
+
+    return (
+        <div className="flex flex-col h-[calc(100vh-140px)] bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden relative">
+            
+            {/* Header Herramientas */}
+            <div className="flex justify-between items-center p-4 border-b border-gray-200 bg-gray-50">
+                <div className="flex items-center gap-4">
+                    <h2 className="text-lg font-bold text-gray-700 flex items-center gap-2">
+                        <Zap className="text-indigo-600" size={20} />
+                        Cronograma Lineal
+                    </h2>
+                    
+                    {/* Navegación Fechas */}
+                    <div className="flex bg-white rounded-lg border border-gray-300 p-1 shadow-sm items-center">
+                        <button onClick={() => setCurrentDate(addDays(currentDate, -7))} className="p-1.5 hover:bg-gray-100 rounded text-gray-600"><ChevronLeft size={18}/></button>
+                        <span className="px-4 text-sm font-bold flex items-center text-gray-700 min-w-[140px] justify-center">
+                            {format(currentDate, 'd MMM', { locale: es })} - {format(addDays(currentDate, DAYS_TO_SHOW - 1), 'd MMM', { locale: es })}
+                        </span>
+                        <button onClick={() => setCurrentDate(addDays(currentDate, 7))} className="p-1.5 hover:bg-gray-100 rounded text-gray-600"><ChevronRight size={18}/></button>
+                    </div>
+
+                    {/* Controles de Zoom */}
+                    <div className="flex bg-white rounded-lg border border-gray-300 p-1 shadow-sm items-center ml-2">
+                        <button onClick={handleZoomOut} className="p-1.5 hover:bg-gray-100 rounded text-gray-600" title="Alejar"><ZoomOut size={16}/></button>
+                        <span className="text-xs font-mono px-2 text-gray-400">Zoom</span>
+                        <button onClick={handleZoomIn} className="p-1.5 hover:bg-gray-100 rounded text-gray-600" title="Acercar"><ZoomIn size={16}/></button>
+                    </div>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                    {loading && <span className="text-xs text-indigo-500 flex items-center animate-pulse"><Loader2 size={14} className="mr-1 animate-spin"/> Cargando...</span>}
+                    <div className="relative">
+                        <Search className="absolute left-3 top-2 text-gray-400" size={16} />
+                        <input 
+                            type="text" 
+                            placeholder="Buscar sede..." 
+                            className="pl-9 pr-4 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none w-64"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
+                </div>
+            </div>
+
+            <div className="flex flex-1 overflow-hidden relative">
+                {/* Columna Izquierda: Objetivos */}
+                <div className="w-64 flex-shrink-0 border-r border-gray-200 bg-white z-20 shadow-md flex flex-col h-full">
+                    <div className="h-10 border-b border-gray-200 bg-gray-100/50 flex items-center px-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                        Sede / Objetivo
+                    </div>
+                    <div className="overflow-hidden bg-white">
+                        {filteredObjectives.map((obj) => (
+                            <div key={obj.id} className="h-16 border-b border-gray-100 flex items-center px-4 hover:bg-gray-50 transition-colors group">
+                                <div className="flex items-center gap-3 w-full">
+                                    <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-xs group-hover:bg-indigo-100 group-hover:text-indigo-600 transition-colors">
+                                        {obj.name.charAt(0)}
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-bold text-gray-700 truncate">{obj.name}</p>
+                                        <p className="text-[10px] text-gray-400 truncate">{obj.address}</p>
+                                    </div>
+                                </div>
                             </div>
                         ))}
                     </div>
                 </div>
 
-                {/* Contenedor de Filas de Recursos */}
-                <div className="flex-1 relative p-4 text-center text-gray-500 text-sm">
-                    <Zap size={20} className="inline mr-2 text-indigo-500"/>
-                    Vista Timeline (Gantt) - Desarrollo.
+                {/* Área del Gráfico */}
+                <div className="flex-1 overflow-auto bg-slate-50 relative">
+                    <div className="min-w-max">
+                        {/* Cabecera de Días */}
+                        <div className="flex border-b border-gray-200 sticky top-0 z-10 bg-white/95 backdrop-blur shadow-sm h-10">
+                            {days.map(d => {
+                                const isToday = isSameDay(d, new Date());
+                                return (
+                                    <div key={d.toISOString()} className={`flex-shrink-0 border-r border-gray-100 flex flex-col justify-center items-center ${isToday ? 'bg-indigo-50/50' : ''}`} style={{ width: cellWidth }}>
+                                        <div className="flex gap-1 items-baseline">
+                                            <span className={`text-[10px] font-bold uppercase ${isToday ? 'text-indigo-600' : 'text-gray-400'}`}>
+                                                {format(d, 'EEE', { locale: es })}
+                                            </span>
+                                            <span className={`text-xs font-bold leading-none ${isToday ? 'text-indigo-700' : 'text-gray-700'}`}>
+                                                {format(d, 'd')}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        {/* Cuerpo del Gráfico */}
+                        <div className="relative">
+                            {/* Líneas de guía verticales (Días y Sub-divisiones horarias) */}
+                            <div className="absolute inset-0 flex pointer-events-none h-full">
+                                {days.map(d => (
+                                    <div key={d.toISOString()} className="border-r border-gray-300 h-full relative" style={{ width: cellWidth }}>
+                                        {/* Líneas tenues cada 6 horas (00, 06, 12, 18) si hay suficiente zoom */}
+                                        {cellWidth > 150 && (
+                                            <>
+                                                <div className="absolute left-[25%] top-0 bottom-0 border-r border-gray-100 border-dashed w-0"></div>
+                                                <div className="absolute left-[50%] top-0 bottom-0 border-r border-gray-100 border-dashed w-0"></div>
+                                                <div className="absolute left-[75%] top-0 bottom-0 border-r border-gray-100 border-dashed w-0"></div>
+                                            </>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* Filas de Datos */}
+                            {filteredObjectives.map((obj) => {
+                                const objShifts = shifts.filter(s => s.objectiveId === obj.id);
+
+                                return (
+                                    <div key={obj.id} className="h-16 border-b border-gray-200/50 relative hover:bg-white/50 transition-colors">
+                                        {objShifts.map(shift => {
+                                            const style = getShiftStyle(shift);
+                                            if (!style) return null;
+                                            
+                                            const isVacant = shift.employeeId === 'VACANTE';
+                                            const start = safeDate(shift.startTime);
+                                            const end = safeDate(shift.endTime);
+
+                                            return (
+                                                <div 
+                                                    key={shift.id}
+                                                    onClick={() => setSelectedShift(shift)} // 🛑 ABRIR MODAL
+                                                    className={`absolute top-3 h-10 rounded-md shadow-sm border text-[10px] flex flex-col justify-center px-2 cursor-pointer transition-all hover:brightness-110 hover:shadow-md hover:scale-[1.01] hover:z-30 overflow-hidden whitespace-nowrap
+                                                        ${isVacant 
+                                                            ? 'bg-gray-100 border-gray-300 text-gray-400 border-dashed' 
+                                                            : shift.isOvertime 
+                                                                ? 'bg-amber-500 border-amber-600 text-white'
+                                                                : 'bg-indigo-600 border-indigo-700 text-white'
+                                                        }
+                                                    `}
+                                                    style={style}
+                                                    title={`${shift.employeeName} (${format(start, 'HH:mm')} - ${format(end, 'HH:mm')})`}
+                                                >
+                                                    <span className="font-bold truncate">{isVacant ? 'VACANTE' : shift.employeeName}</span>
+                                                    {cellWidth > 80 && (
+                                                        <span className="opacity-90 text-[9px] font-mono">{format(start, 'HH:mm')} - {format(end, 'HH:mm')}</span>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
                 </div>
             </div>
-        );
-    };
-    
-    // --- RENDER PRINCIPAL ---
 
-  return (
-    <div className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-white">
-        <div className="flex items-center gap-4">
-            {/* Navegación */}
-            <div className="flex items-center bg-gray-100 rounded-lg p-1">
-                <button onClick={() => dispatch({ type: 'NAVIGATE_PREV' })} className="p-1 hover:bg-white rounded"><ChevronLeft size={18}/></button>
-                <button onClick={() => dispatch({ type: 'NAVIGATE_TODAY' })} className="px-3 text-xs font-bold hover:bg-white rounded">Hoy</button>
-                <button onClick={() => dispatch({ type: 'NAVIGATE_NEXT' })} className="p-1 hover:bg-white rounded"><ChevronRight size={18}/></button>
-            </div>
-            {/* Título Principal */}
-            <h2 className="text-lg font-bold text-gray-800 capitalize w-40">
-                {getHeaderLabel()}
-            </h2>
-        </div>
-        <div className="flex gap-2 items-center">
-            {readOnly && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-md font-bold flex items-center gap-1"><Lock size={12}/> Modo Lectura</span>}
-            {isLoading && <span className="text-xs text-blue-500 animate-pulse self-center">Cargando...</span>}
-            {/* Selector de Vista (Actualizado para incluir Gantt) */}
-            <div className="flex bg-gray-100 rounded-lg p-1">
-                {(['month', 'week', 'day', 'timeline'] as ViewType[]).map(v => ( // 🛑 Añadido 'timeline'
-                    <button key={v} onClick={() => dispatch({ type: 'SET_VIEW', payload: v })} className={cn("px-3 py-1 text-xs font-medium rounded capitalize", state.view === v ? "bg-white shadow text-indigo-600" : "text-gray-500")}>
-                        {v === 'month' ? 'Mes' : v === 'week' ? 'Sem' : v === 'day' ? 'Día' : 'Gantt'}
-                    </button>
-                ))}
-            </div>
-        </div>
-      </header>
-      <div className="flex-1 overflow-hidden relative">
-        {state.view === 'month' && renderMonthView()}
-        {/* Llama al TimeGrid si la vista es 'week' o 'day' */}
-        {(state.view === 'week' || state.view === 'day') && renderTimeGrid()}
-        {/* Llama al nuevo Timeline si la vista es 'timeline' */}
-        {state.view === 'timeline' && renderTimelineView()}
-      </div>
-    </div>
-  );
+            {/* 🛑 MODAL DE DETALLE DEL TURNO */}
+            {selectedShift && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all scale-100">
+                        <div className="bg-gray-50 px-5 py-4 border-b border-gray-100 flex justify-between items-center">
+                            <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                                <Clock size={16} className="text-indigo-600"/> Detalle de Turno
+                            </h3>
+                            <button onClick={() => setSelectedShift(null)} className="text-gray-400 hover:text-gray-600 transition-colors"><X size={20}/></button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            
+                            {/* Empleado */}
+                            <div>
+                                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">Colaborador</label>
+                                <div className="flex items-center gap-3">
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${selectedShift.employeeId === 'VACANTE' ? 'bg-gray-100 text-gray-400' : 'bg-indigo-100 text-indigo-700'}`}>
+                                        {selectedShift.employeeName === 'VACANTE' ? 'V' : selectedShift.employeeName.charAt(0)}
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-gray-800 text-sm">{selectedShift.employeeName}</p>
+                                        <p className="text-xs text-gray-500">{selectedShift.employeeId === 'VACANTE' ? 'Posición vacante' : 'Asignado'}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Horario y Lugar */}
+                            <div className="grid grid-cols-2 gap-4 pt-2">
+                                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                    <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">Horario</label>
+                                    <p className="font-mono text-sm text-indigo-700 font-bold">
+                                        {format(safeDate(selectedShift.startTime), 'HH:mm')} - {format(safeDate(selectedShift.endTime), 'HH:mm')}
+                                    </p>
+                                    <p className="text-[10px] text-gray-400 mt-1">{differenceInMinutes(safeDate(selectedShift.endTime), safeDate(selectedShift.startTime)) / 60} horas</p>
+                                </div>
+                                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                    <label className="text-[10px] font-bold text-gray-400 uppercase block mb-1">Objetivo</label>
+                                    <p className="text-xs font-bold text-gray-700 line-clamp-2">{selectedShift.objectiveName}</p>
+                                </div>
+                            </div>
+
+                            {/* Estado */}
+                            <div className="pt-2">
+                                <div className={`flex items-center gap-2 p-2 rounded-lg text-xs font-bold ${
+                                    selectedShift.status === 'Completed' ? 'bg-green-50 text-green-700 border border-green-100' :
+                                    selectedShift.status === 'InProgress' ? 'bg-blue-50 text-blue-700 border border-blue-100 animate-pulse' :
+                                    'bg-gray-50 text-gray-500 border border-gray-200'
+                                }`}>
+                                    <CheckCircle2 size={14} /> 
+                                    Estado: {selectedShift.status === 'Assigned' ? 'Programado' : selectedShift.status}
+                                </div>
+                            </div>
+
+                        </div>
+                        <div className="bg-gray-50 px-5 py-3 flex justify-end">
+                            <button onClick={() => setSelectedShift(null)} className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors shadow-sm">
+                                Cerrar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+        </div>
+    );
+}
+
+================================================================================
+FILE: apps\web\src\components\admin\scheduler.tsx
+================================================================================
+import React, { useReducer, useMemo, useEffect } from 'react';
+import { 
+  format, 
+  addMonths, 
+  subMonths, 
+  startOfMonth, 
+  endOfMonth, 
+  startOfWeek, 
+  endOfWeek, 
+  isSameDay, 
+  addDays, 
+  parseISO, 
+  setHours, 
+  setMinutes,
+  differenceInMinutes,
+  addMinutes,
+  startOfDay,
+  endOfDay,
+  isBefore,
+  isAfter
+} from 'date-fns';
+import { es } from 'date-fns/locale';
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  Clock,
+  Lock
+} from 'lucide-react';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export type ViewType = 'month' | 'week' | 'day';
+
+export interface SchedulerEvent {
+  id: string;
+  title: string;
+  description?: string;
+  start: Date | string;
+  end: Date | string;
+  color?: string;
+  originalData?: any;
+}
+
+interface SchedulerState {
+  currentDate: Date;
+  view: ViewType;
+}
+
+type SchedulerAction = 
+  | { type: 'SET_VIEW'; payload: ViewType }
+  | { type: 'NAVIGATE_NEXT' }
+  | { type: 'NAVIGATE_PREV' }
+  | { type: 'NAVIGATE_TODAY' }
+  | { type: 'SET_DATE'; payload: Date };
+
+interface SchedulerProps {
+  events: SchedulerEvent[];
+  isLoading?: boolean;
+  onEventClick?: (event: SchedulerEvent) => void;
+  onDropInfo?: (data: { employeeId: string, employeeName: string, start?: Date, end?: Date, targetShiftId?: string }) => void;
+  onEventMove?: (event: SchedulerEvent, newStart: Date, newEnd: Date) => void;
+  onDateChange?: (date: Date) => void;
+  onViewChange?: (view: ViewType) => void;
+  startHour?: number;
+  endHour?: number;
+  readOnly?: boolean;
+}
+
+const CELL_HEIGHT = 60; 
+
+const schedulerReducer = (state: SchedulerState, action: SchedulerAction): SchedulerState => {
+  switch (action.type) {
+    case 'SET_VIEW': return { ...state, view: action.payload };
+    case 'NAVIGATE_NEXT': {
+      const { view, currentDate } = state;
+      let nextDate = view === 'month' ? addMonths(currentDate, 1) : addDays(currentDate, view === 'week' ? 7 : 1);
+      return { ...state, currentDate: nextDate };
+    }
+    case 'NAVIGATE_PREV': {
+      const { view, currentDate } = state;
+      let prevDate = view === 'month' ? subMonths(currentDate, 1) : addDays(currentDate, view === 'week' ? -7 : -1);
+      return { ...state, currentDate: prevDate };
+    }
+    case 'NAVIGATE_TODAY': return { ...state, currentDate: new Date() };
+    case 'SET_DATE': return { ...state, currentDate: action.payload };
+    default: return state;
+  }
+};
+
+const Scheduler: React.FC<SchedulerProps> = ({ 
+  events = [], 
+  isLoading = false, 
+  onEventClick, 
+  onDropInfo, 
+  onEventMove,
+  onDateChange,
+  onViewChange,
+  startHour = 0, 
+  endHour = 24,
+  readOnly = false
+}) => {
+  
+  const [state, dispatch] = useReducer(schedulerReducer, { currentDate: new Date(), view: 'week' });
+
+  useEffect(() => { if (onDateChange) onDateChange(state.currentDate); }, [state.currentDate, onDateChange]);
+  useEffect(() => { if (onViewChange) onViewChange(state.view); }, [state.view, onViewChange]);
+
+  const normalizedEvents = useMemo(() => {
+    return events.map(evt => ({
+      ...evt,
+      start: typeof evt.start === 'string' ? parseISO(evt.start) : evt.start,
+      end: typeof evt.end === 'string' ? parseISO(evt.end) : evt.end,
+    }));
+  }, [events]);
+
+  // --- HANDLERS ---
+
+  const handleSlotDrop = (e: React.DragEvent, day: Date, hour: number) => {
+      e.preventDefault();
+      if (readOnly) return;
+
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const offsetY = e.clientY - rect.top;
+      const minutesAdded = Math.floor((offsetY / CELL_HEIGHT) * 60);
+      const roundedMinutes = Math.round(minutesAdded / 15) * 15; 
+
+      const newStart = new Date(day);
+      newStart.setHours(hour, roundedMinutes, 0, 0);
+
+      const movedShiftId = e.dataTransfer.getData("shiftId");
+      if (movedShiftId && onEventMove) {
+          const shift = normalizedEvents.find(s => s.id === movedShiftId);
+          if (shift) {
+              const durationMs = (shift.end as Date).getTime() - (shift.start as Date).getTime();
+              const newEnd = new Date(newStart.getTime() + durationMs);
+              onEventMove(shift, newStart, newEnd);
+          }
+          return;
+      }
+
+      const employeeId = e.dataTransfer.getData("employeeId");
+      const employeeName = e.dataTransfer.getData("employeeName");
+      if (employeeId && onDropInfo) {
+          const end = addMinutes(newStart, 480); 
+          onDropInfo({ employeeId, employeeName, start: newStart, end });
+      }
+  };
+
+  const handleEventDrop = (e: React.DragEvent, targetEvent: SchedulerEvent) => {
+      e.preventDefault();
+      e.stopPropagation(); 
+      if (readOnly) return;
+
+      const employeeId = e.dataTransfer.getData("employeeId");
+      const employeeName = e.dataTransfer.getData("employeeName");
+
+      if (employeeId && onDropInfo) {
+          onDropInfo({ 
+              employeeId, 
+              employeeName, 
+              targetShiftId: targetEvent.id 
+          });
+      }
+  };
+
+  const renderMonthView = () => {
+    const monthStart = startOfMonth(state.currentDate);
+    const monthEnd = endOfMonth(monthStart);
+    const startDate = startOfWeek(monthStart, { weekStartsOn: 1 });
+    const endDate = endOfWeek(monthEnd, { weekStartsOn: 1 });
+    
+    let days: React.ReactNode[] = []; 
+    let day = startDate;
+    const rows = [];
+
+    while (day <= endDate) {
+        for (let i = 0; i < 7; i++) {
+            const cloneDay = day;
+            const isToday = isSameDay(day, new Date());
+            const dayEvents = normalizedEvents
+                .filter(e => isSameDay(e.start as Date, cloneDay))
+                .sort((a, b) => (a.start as Date).getTime() - (b.start as Date).getTime());
+            
+            days.push(
+                <div 
+                    key={day.toISOString()} 
+                    className={cn(
+                        "min-h-[100px] border-b border-r border-gray-100 p-1 relative transition-colors",
+                        !isSameDay(day, monthStart) && day.getMonth() !== monthStart.getMonth() ? "bg-gray-50/30 text-gray-400" : "",
+                        !readOnly && "hover:bg-gray-50"
+                    )}
+                    onClick={() => dispatch({ type: 'SET_DATE', payload: cloneDay })}
+                    onDragOver={!readOnly ? (e) => e.preventDefault() : undefined}
+                    onDrop={!readOnly ? (e) => {
+                        const employeeId = e.dataTransfer.getData("employeeId");
+                        const employeeName = e.dataTransfer.getData("employeeName");
+                        if (employeeId && onDropInfo) {
+                            const start = setHours(cloneDay, 9);
+                            const end = setHours(cloneDay, 17);
+                            onDropInfo({ employeeId, employeeName, start, end });
+                        }
+                    } : undefined}
+                >
+                    <div className="flex justify-between items-center mb-1">
+                       <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-indigo-600 text-white" : "")}>
+                         {format(day, 'd')}
+                       </span>
+                    </div>
+                    <div className="flex flex-col gap-1 overflow-hidden max-h-[80px]">
+                        {dayEvents.slice(0, 4).map(evt => (
+                            <div 
+                                key={evt.id} 
+                                onClick={(e) => { e.stopPropagation(); onEventClick?.(evt); }} 
+                                className={cn("text-[10px] px-1 rounded truncate cursor-pointer flex items-center gap-1", evt.color || "bg-blue-100 text-blue-800")}
+                                title={evt.title}
+                                draggable={!readOnly}
+                                onDragStart={!readOnly ? (e) => {
+                                    e.dataTransfer.setData("shiftId", evt.id);
+                                    e.dataTransfer.effectAllowed = "move";
+                                } : undefined}
+                            >
+                                {readOnly && <Lock size={8} className="opacity-50"/>}
+                                {format(evt.start as Date, 'HH:mm')} {evt.title}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+            day = addDays(day, 1);
+        }
+        rows.push(<div className="grid grid-cols-7" key={day.toISOString()}>{days}</div>);
+        days = []; 
+    }
+    return <div className="border-l border-t border-gray-200">{rows}</div>;
+  };
+
+  // 🛑 FIX: VISUALIZACIÓN DE TURNOS NOCTURNOS Y CONTINUIDAD
+  const renderTimeGrid = () => {
+    let daysToShow = state.view === 'week' 
+        ? Array.from({ length: 7 }).map((_, i) => addDays(startOfWeek(state.currentDate, { weekStartsOn: 1 }), i))
+        : [state.currentDate];
+
+    const hours = Array.from({ length: endHour - startHour }).map((_, i) => startHour + i);
+
+    return (
+      <div className="flex flex-col h-full bg-white relative overflow-hidden">
+        <div className="flex border-b border-gray-200 ml-14">
+          {daysToShow.map(day => {
+            const isToday = isSameDay(day, new Date());
+            return (
+              <div key={day.toISOString()} className="flex-1 py-2 text-center border-r border-gray-100">
+                <div className={cn("text-xs uppercase font-bold", isToday ? "text-indigo-600" : "text-gray-500")}>{format(day, 'EEE', { locale: es })}</div>
+                <div className={cn("text-lg font-bold", isToday ? "text-indigo-600" : "text-gray-800")}>{format(day, 'd')}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex-1 overflow-y-auto relative flex">
+          <div className="w-14 flex-shrink-0 bg-gray-50 border-r border-gray-200 sticky left-0 z-10 select-none">
+            {hours.map(h => {
+              const timeLabel = setMinutes(setHours(new Date(), h), 0);
+              return (
+                <div key={h} className="border-b border-gray-100 text-[10px] text-gray-400 text-right pr-2 pt-1 relative" style={{ height: CELL_HEIGHT }}>
+                  <span className="-top-2 relative">{format(timeLabel, 'HH:mm')}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex-1 flex relative min-w-[600px]">
+            <div className="absolute inset-0 flex flex-col z-0">
+               {hours.map(h => <div key={h} className="w-full border-b border-gray-100" style={{ height: CELL_HEIGHT }}></div>)}
+            </div>
+
+            {daysToShow.map(day => {
+              // Definir límites del día actual en la grilla (ej: 00:00 a 24:00)
+              const dayStart = startOfDay(day);
+              const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
+
+              // 🛑 FIX: Filtramos eventos que se superponen con este día, no solo los que empiezan hoy
+              const dayEvents = normalizedEvents.filter(evt => {
+                  const evtStart = evt.start as Date;
+                  const evtEnd = evt.end as Date;
+                  return (evtStart < dayEnd && evtEnd > dayStart);
+              });
+
+              return (
+                <div key={day.toISOString()} className="flex-1 border-r border-gray-100 relative h-full">
+                  
+                  {!readOnly && (
+                      <div className="absolute inset-0 z-0 flex flex-col">
+                          {hours.map(h => (
+                              <div 
+                                key={h} 
+                                style={{ height: CELL_HEIGHT }} 
+                                className="w-full transition-colors hover:bg-indigo-50/20"
+                                onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+                                onDrop={(e) => handleSlotDrop(e, day, h)}
+                              />
+                          ))}
+                      </div>
+                  )}
+
+                  {dayEvents.map(evt => {
+                    // Cálculo visual relativo al día actual
+                    const originalStart = evt.start as Date;
+                    const originalEnd = evt.end as Date;
+
+                    // "Recortamos" el evento visualmente para que encaje en este día
+                    const visualStart = isBefore(originalStart, dayStart) ? dayStart : originalStart;
+                    const visualEnd = isAfter(originalEnd, dayEnd) ? dayEnd : originalEnd;
+
+                    const startH = visualStart.getHours();
+                    const startM = visualStart.getMinutes();
+                    
+                    const minsFromTop = (Math.max(startH, startHour) - startHour) * 60 + startM;
+                    const top = Math.max(0, (minsFromTop / 60) * CELL_HEIGHT);
+                    
+                    const durationMins = differenceInMinutes(visualEnd, visualStart);
+                    // Corrección visual mínima
+                    const height = Math.max((durationMins / 60) * CELL_HEIGHT, 20);
+
+                    // Si el evento está fuera del rango de horas visible, no renderizar
+                    if (visualEnd.getHours() < startHour) return null;
+
+                    return (
+                      <div
+                        key={`${evt.id}-${day.toISOString()}`} // Key única por fragmento
+                        onClick={(e) => { e.stopPropagation(); onEventClick?.(evt); }}
+                        draggable={!readOnly}
+                        onDragStart={!readOnly ? (e) => {
+                            e.dataTransfer.setData("shiftId", evt.id);
+                            e.dataTransfer.effectAllowed = "move";
+                        } : undefined}
+                        onDragOver={!readOnly ? (e) => { 
+                            e.preventDefault(); 
+                            e.stopPropagation(); 
+                            e.dataTransfer.dropEffect = "copy"; 
+                        } : undefined} 
+                        onDrop={!readOnly ? (e) => handleEventDrop(e, evt) : undefined} 
+                        
+                        className={cn(
+                            "absolute left-1 right-1 rounded border-l-4 p-1 shadow-sm cursor-pointer transition-all text-xs overflow-hidden group", 
+                            !readOnly && "hover:z-50 hover:brightness-95", 
+                            readOnly && "opacity-90", 
+                            evt.color || "bg-indigo-50 border-indigo-500"
+                        )}
+                        style={{ top: `${top}px`, height: `${height}px` }}
+                        title={`${evt.title} (${format(originalStart, 'HH:mm')} - ${format(originalEnd, 'HH:mm')})`}
+                      >
+                        {readOnly && <Lock size={10} className="absolute top-1 right-1 text-gray-500 opacity-50"/>}
+                        <div className="font-bold truncate group-hover:whitespace-normal">{evt.title}</div>
+                        <div className="opacity-80 truncate text-[10px] flex items-center gap-1">
+                           <Clock size={10}/> {format(originalStart, 'HH:mm')} - {format(originalEnd, 'HH:mm')}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-white">
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-bold text-gray-800 capitalize w-40">{format(state.currentDate, 'MMMM yyyy', { locale: es })}</h2>
+          <div className="flex items-center bg-gray-100 rounded-lg p-1">
+            <button onClick={() => dispatch({ type: 'NAVIGATE_PREV' })} className="p-1 hover:bg-white rounded"><ChevronLeft size={18}/></button>
+            <button onClick={() => dispatch({ type: 'NAVIGATE_TODAY' })} className="px-3 text-xs font-bold hover:bg-white rounded">Hoy</button>
+            <button onClick={() => dispatch({ type: 'NAVIGATE_NEXT' })} className="p-1 hover:bg-white rounded"><ChevronRight size={18}/></button>
+          </div>
+        </div>
+        <div className="flex gap-2 items-center">
+            {readOnly && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-md font-bold flex items-center gap-1"><Lock size={12}/> Modo Lectura</span>}
+            {isLoading && <span className="text-xs text-blue-500 animate-pulse self-center">Cargando...</span>}
+            <div className="flex bg-gray-100 rounded-lg p-1">
+                {(['month', 'week', 'day'] as ViewType[]).map(v => (
+                    <button key={v} onClick={() => dispatch({ type: 'SET_VIEW', payload: v })} className={cn("px-3 py-1 text-xs font-medium rounded capitalize", state.view === v ? "bg-white shadow text-indigo-600" : "text-gray-500")}>
+                        {v === 'month' ? 'Mes' : v === 'week' ? 'Sem' : 'Día'}
+                    </button>
+                ))}
+            </div>
+        </div>
+      </header>
+      <div className="flex-1 overflow-hidden relative">
+        {state.view === 'month' ? renderMonthView() : renderTimeGrid()}
+      </div>
+    </div>
+  );
+};
+
+export const DragAndDropScheduler = React.memo(Scheduler);
+export default DragAndDropScheduler;
+
+================================================================================
+FILE: apps\web\src\components\admin\scheduler_old.tsx
+================================================================================
+import React, { useReducer, useMemo, useEffect } from 'react';
+import { 
+  format, 
+  addMonths, 
+  subMonths, 
+  startOfMonth, 
+  endOfMonth, 
+  startOfWeek, 
+  endOfWeek, 
+  isSameDay, 
+  addDays, 
+  parseISO, 
+  setHours, 
+  setMinutes,
+  differenceInMinutes,
+  addMinutes
+} from 'date-fns';
+import { es } from 'date-fns/locale';
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  Clock,
+  Lock
+} from 'lucide-react';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export type ViewType = 'month' | 'week' | 'day';
+
+export interface SchedulerEvent {
+  id: string;
+  title: string;
+  description?: string;
+  start: Date | string;
+  end: Date | string;
+  color?: string;
+  originalData?: any;
+}
+
+interface SchedulerState {
+  currentDate: Date;
+  view: ViewType;
+}
+
+type SchedulerAction = 
+  | { type: 'SET_VIEW'; payload: ViewType }
+  | { type: 'NAVIGATE_NEXT' }
+  | { type: 'NAVIGATE_PREV' }
+  | { type: 'NAVIGATE_TODAY' }
+  | { type: 'SET_DATE'; payload: Date };
+
+interface SchedulerProps {
+  events: SchedulerEvent[];
+  isLoading?: boolean;
+  onEventClick?: (event: SchedulerEvent) => void;
+  onDropInfo?: (data: { employeeId: string, employeeName: string, start?: Date, end?: Date, targetShiftId?: string }) => void;
+  onEventMove?: (event: SchedulerEvent, newStart: Date, newEnd: Date) => void;
+  onDateChange?: (date: Date) => void;
+  onViewChange?: (view: ViewType) => void;
+  startHour?: number;
+  endHour?: number;
+  readOnly?: boolean;
+}
+
+const CELL_HEIGHT = 60; 
+
+const schedulerReducer = (state: SchedulerState, action: SchedulerAction): SchedulerState => {
+  switch (action.type) {
+    case 'SET_VIEW': return { ...state, view: action.payload };
+    case 'NAVIGATE_NEXT': {
+      const { view, currentDate } = state;
+      let nextDate = view === 'month' ? addMonths(currentDate, 1) : addDays(currentDate, view === 'week' ? 7 : 1);
+      return { ...state, currentDate: nextDate };
+    }
+    case 'NAVIGATE_PREV': {
+      const { view, currentDate } = state;
+      let prevDate = view === 'month' ? subMonths(currentDate, 1) : addDays(currentDate, view === 'week' ? -7 : -1);
+      return { ...state, currentDate: prevDate };
+    }
+    case 'NAVIGATE_TODAY': return { ...state, currentDate: new Date() };
+    case 'SET_DATE': return { ...state, currentDate: action.payload };
+    default: return state;
+  }
+};
+
+const Scheduler: React.FC<SchedulerProps> = ({ 
+  events = [], 
+  isLoading = false, 
+  onEventClick, 
+  onDropInfo, 
+  onEventMove,
+  onDateChange,
+  onViewChange,
+  startHour = 0, 
+  endHour = 24,
+  readOnly = false
+}) => {
+  
+  const [state, dispatch] = useReducer(schedulerReducer, { currentDate: new Date(), view: 'week' });
+
+  useEffect(() => { if (onDateChange) onDateChange(state.currentDate); }, [state.currentDate, onDateChange]);
+  useEffect(() => { if (onViewChange) onViewChange(state.view); }, [state.view, onViewChange]);
+
+  const normalizedEvents = useMemo(() => {
+    return events.map(evt => ({
+      ...evt,
+      start: typeof evt.start === 'string' ? parseISO(evt.start) : evt.start,
+      end: typeof evt.end === 'string' ? parseISO(evt.end) : evt.end,
+    }));
+  }, [events]);
+
+  // --- HANDLERS ---
+
+  const handleSlotDrop = (e: React.DragEvent, day: Date, hour: number) => {
+      e.preventDefault();
+      if (readOnly) return;
+
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const offsetY = e.clientY - rect.top;
+      const minutesAdded = Math.floor((offsetY / CELL_HEIGHT) * 60);
+      const roundedMinutes = Math.round(minutesAdded / 15) * 15; 
+
+      const newStart = new Date(day);
+      newStart.setHours(hour, roundedMinutes, 0, 0);
+
+      const movedShiftId = e.dataTransfer.getData("shiftId");
+      if (movedShiftId && onEventMove) {
+          const shift = normalizedEvents.find(s => s.id === movedShiftId);
+          if (shift) {
+              const durationMs = (shift.end as Date).getTime() - (shift.start as Date).getTime();
+              const newEnd = new Date(newStart.getTime() + durationMs);
+              onEventMove(shift, newStart, newEnd);
+          }
+          return;
+      }
+
+      const employeeId = e.dataTransfer.getData("employeeId");
+      const employeeName = e.dataTransfer.getData("employeeName");
+      if (employeeId && onDropInfo) {
+          const end = addMinutes(newStart, 480); 
+          onDropInfo({ employeeId, employeeName, start: newStart, end });
+      }
+  };
+
+  const handleEventDrop = (e: React.DragEvent, targetEvent: SchedulerEvent) => {
+      e.preventDefault();
+      e.stopPropagation(); 
+      if (readOnly) return;
+
+      const employeeId = e.dataTransfer.getData("employeeId");
+      const employeeName = e.dataTransfer.getData("employeeName");
+
+      if (employeeId && onDropInfo) {
+          onDropInfo({ 
+              employeeId, 
+              employeeName, 
+              targetShiftId: targetEvent.id 
+          });
+      }
+  };
+
+  const renderMonthView = () => {
+    const monthStart = startOfMonth(state.currentDate);
+    const monthEnd = endOfMonth(monthStart);
+    const startDate = startOfWeek(monthStart, { weekStartsOn: 1 });
+    const endDate = endOfWeek(monthEnd, { weekStartsOn: 1 });
+    
+    let days: React.ReactNode[] = []; 
+    let day = startDate;
+    const rows = [];
+
+    while (day <= endDate) {
+        for (let i = 0; i < 7; i++) {
+            const cloneDay = day;
+            const isToday = isSameDay(day, new Date());
+            const dayEvents = normalizedEvents
+                .filter(e => isSameDay(e.start as Date, cloneDay))
+                .sort((a, b) => (a.start as Date).getTime() - (b.start as Date).getTime());
+            
+            days.push(
+                <div 
+                    key={day.toISOString()} 
+                    className={cn(
+                        "min-h-[100px] border-b border-r border-gray-100 p-1 relative transition-colors",
+                        !isSameDay(day, monthStart) && day.getMonth() !== monthStart.getMonth() ? "bg-gray-50/30 text-gray-400" : "",
+                        !readOnly && "hover:bg-gray-50"
+                    )}
+                    onClick={() => dispatch({ type: 'SET_DATE', payload: cloneDay })}
+                    onDragOver={!readOnly ? (e) => e.preventDefault() : undefined}
+                    onDrop={!readOnly ? (e) => {
+                        const employeeId = e.dataTransfer.getData("employeeId");
+                        const employeeName = e.dataTransfer.getData("employeeName");
+                        if (employeeId && onDropInfo) {
+                            const start = setHours(cloneDay, 9);
+                            const end = setHours(cloneDay, 17);
+                            onDropInfo({ employeeId, employeeName, start, end });
+                        }
+                    } : undefined}
+                >
+                    <div className="flex justify-between items-center mb-1">
+                       <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-indigo-600 text-white" : "")}>
+                         {format(day, 'd')}
+                       </span>
+                    </div>
+                    <div className="flex flex-col gap-1 overflow-hidden max-h-[80px]">
+                        {dayEvents.slice(0, 4).map(evt => (
+                            <div 
+                                key={evt.id} 
+                                onClick={(e) => { e.stopPropagation(); onEventClick?.(evt); }} 
+                                className={cn("text-[10px] px-1 rounded truncate cursor-pointer flex items-center gap-1", evt.color || "bg-blue-100 text-blue-800")}
+                                title={evt.title}
+                                draggable={!readOnly}
+                                onDragStart={!readOnly ? (e) => {
+                                    e.dataTransfer.setData("shiftId", evt.id);
+                                    e.dataTransfer.effectAllowed = "move";
+                                } : undefined}
+                                onDragOver={!readOnly ? (e) => e.preventDefault() : undefined}
+                                onDrop={!readOnly ? (e) => handleEventDrop(e, evt) : undefined}
+                            >
+                                {readOnly && <Lock size={8} className="opacity-50"/>}
+                                {format(evt.start as Date, 'HH:mm')} {evt.title}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+            day = addDays(day, 1);
+        }
+        rows.push(<div className="grid grid-cols-7" key={day.toISOString()}>{days}</div>);
+        days = []; 
+    }
+    return <div className="border-l border-t border-gray-200">{rows}</div>;
+  };
+
+  const renderTimeGrid = () => {
+    let daysToShow = state.view === 'week' 
+        ? Array.from({ length: 7 }).map((_, i) => addDays(startOfWeek(state.currentDate, { weekStartsOn: 1 }), i))
+        : [state.currentDate];
+
+    const hours = Array.from({ length: endHour - startHour }).map((_, i) => startHour + i);
+
+    return (
+      <div className="flex flex-col h-full bg-white relative overflow-hidden">
+        <div className="flex border-b border-gray-200 ml-14">
+          {daysToShow.map(day => {
+            const isToday = isSameDay(day, new Date());
+            return (
+              <div key={day.toISOString()} className="flex-1 py-2 text-center border-r border-gray-100">
+                <div className={cn("text-xs uppercase font-bold", isToday ? "text-indigo-600" : "text-gray-500")}>{format(day, 'EEE', { locale: es })}</div>
+                <div className={cn("text-lg font-bold", isToday ? "text-indigo-600" : "text-gray-800")}>{format(day, 'd')}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex-1 overflow-y-auto relative flex">
+          <div className="w-14 flex-shrink-0 bg-gray-50 border-r border-gray-200 sticky left-0 z-10 select-none">
+            {hours.map(h => {
+              const timeLabel = setMinutes(setHours(new Date(), h), 0);
+              return (
+                <div key={h} className="border-b border-gray-100 text-[10px] text-gray-400 text-right pr-2 pt-1 relative" style={{ height: CELL_HEIGHT }}>
+                  <span className="-top-2 relative">{format(timeLabel, 'HH:mm')}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex-1 flex relative min-w-[600px]">
+            <div className="absolute inset-0 flex flex-col z-0">
+               {hours.map(h => <div key={h} className="w-full border-b border-gray-100" style={{ height: CELL_HEIGHT }}></div>)}
+            </div>
+
+            {daysToShow.map(day => {
+              const dayEvents = normalizedEvents.filter(e => isSameDay(e.start as Date, day));
+              return (
+                <div key={day.toISOString()} className="flex-1 border-r border-gray-100 relative h-full">
+                  
+                  {!readOnly && (
+                      <div className="absolute inset-0 z-0 flex flex-col">
+                          {hours.map(h => (
+                              <div 
+                                key={h} 
+                                style={{ height: CELL_HEIGHT }} 
+                                className="w-full transition-colors hover:bg-indigo-50/20"
+                                onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+                                onDrop={(e) => handleSlotDrop(e, day, h)}
+                              />
+                          ))}
+                      </div>
+                  )}
+
+                  {dayEvents.map(evt => {
+                    const start = evt.start as Date;
+                    const end = evt.end as Date;
+                    
+                    const startH = start.getHours();
+                    const startM = start.getMinutes();
+                    
+                    if (end.getHours() < startHour) return null; 
+                    
+                    const minsFromTop = (Math.max(startH, startHour) - startHour) * 60 + startM;
+                    const top = Math.max(0, (minsFromTop / 60) * CELL_HEIGHT);
+                    const durationMins = differenceInMinutes(end, start);
+                    const height = (durationMins / 60) * CELL_HEIGHT;
+
+                    return (
+                      <div
+                        key={evt.id}
+                        onClick={(e) => { e.stopPropagation(); onEventClick?.(evt); }}
+                        draggable={!readOnly}
+                        onDragStart={!readOnly ? (e) => {
+                            e.dataTransfer.setData("shiftId", evt.id);
+                            e.dataTransfer.effectAllowed = "move";
+                        } : undefined}
+                        onDragOver={!readOnly ? (e) => { 
+                            e.preventDefault(); 
+                            e.stopPropagation(); 
+                            e.dataTransfer.dropEffect = "copy"; 
+                        } : undefined} 
+                        onDrop={!readOnly ? (e) => handleEventDrop(e, evt) : undefined} 
+                        
+                        className={cn(
+                            "absolute left-1 right-1 rounded border-l-4 p-1 shadow-sm cursor-pointer transition-all text-xs overflow-hidden group", 
+                            !readOnly && "hover:z-50 hover:brightness-95", 
+                            readOnly && "opacity-90", 
+                            evt.color || "bg-indigo-50 border-indigo-500"
+                        )}
+                        style={{ top: `${top}px`, height: `${Math.max(height, 24)}px` }}
+                        title={`${evt.title}`}
+                      >
+                        {readOnly && <Lock size={10} className="absolute top-1 right-1 text-gray-500 opacity-50"/>}
+                        <div className="font-bold truncate group-hover:whitespace-normal">{evt.title}</div>
+                        <div className="opacity-80 truncate text-[10px] flex items-center gap-1">
+                           <Clock size={10}/> {format(start, 'HH:mm')} - {format(end, 'HH:mm')}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-white">
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-bold text-gray-800 capitalize w-40">{format(state.currentDate, 'MMMM yyyy', { locale: es })}</h2>
+          <div className="flex items-center bg-gray-100 rounded-lg p-1">
+            <button onClick={() => dispatch({ type: 'NAVIGATE_PREV' })} className="p-1 hover:bg-white rounded"><ChevronLeft size={18}/></button>
+            <button onClick={() => dispatch({ type: 'NAVIGATE_TODAY' })} className="px-3 text-xs font-bold hover:bg-white rounded">Hoy</button>
+            <button onClick={() => dispatch({ type: 'NAVIGATE_NEXT' })} className="p-1 hover:bg-white rounded"><ChevronRight size={18}/></button>
+          </div>
+        </div>
+        <div className="flex gap-2 items-center">
+            {readOnly && <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-md font-bold flex items-center gap-1"><Lock size={12}/> Modo Lectura</span>}
+            {isLoading && <span className="text-xs text-blue-500 animate-pulse self-center">Cargando...</span>}
+            <div className="flex bg-gray-100 rounded-lg p-1">
+                {(['month', 'week', 'day'] as ViewType[]).map(v => (
+                    <button key={v} onClick={() => dispatch({ type: 'SET_VIEW', payload: v })} className={cn("px-3 py-1 text-xs font-medium rounded capitalize", state.view === v ? "bg-white shadow text-indigo-600" : "text-gray-500")}>
+                        {v === 'month' ? 'Mes' : v === 'week' ? 'Sem' : 'Día'}
+                    </button>
+                ))}
+            </div>
+        </div>
+      </header>
+      <div className="flex-1 overflow-hidden relative">
+        {state.view === 'month' ? renderMonthView() : renderTimeGrid()}
+      </div>
+    </div>
+  );
 };
 
 export const DragAndDropScheduler = React.memo(Scheduler);
@@ -8610,27 +9272,16 @@ export function EmployeeDashboard({ currentUser }: EmployeeDashboardProps) {
 ================================================================================
 FILE: apps\web\src\components\layout\DashboardLayout.tsx
 ================================================================================
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useClient } from '@/context/ClientContext';
 import { auth } from '@/services/firebase-client.service';
-import { APP_INFO } from '@/config/app.config';
-
-// Importamos iconos modernos
+import { APP_INFO, MenuItem } from '@/config/app.config';
+// Importamos iconos
 import { 
-  LayoutDashboard, 
-  Building2, 
-  Target, 
-  Users, 
-  CalendarDays, 
-  ShieldCheck, 
-  Activity, 
-  Menu, 
-  X, 
-  LogOut,
-  ChevronDown,
-  Settings,
-  Map
+  LayoutDashboard, Building2, Target, Users, CalendarDays, ShieldCheck, 
+  Activity, Menu, X, LogOut, ChevronDown, Settings, Map, Zap, 
+  FileText, ChevronRight 
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -8638,7 +9289,7 @@ interface LayoutProps {
   title: string;
 }
 
-// Mapeo de strings (del config) a Componentes de iconos
+// Mapeo de iconos
 const iconMap: any = {
   LayoutDashboard: <LayoutDashboard size={20} />,
   Building2: <Building2 size={20} />,
@@ -8647,7 +9298,10 @@ const iconMap: any = {
   CalendarDays: <CalendarDays size={20} />,
   ShieldCheck: <ShieldCheck size={20} />,
   Activity: <Activity size={20} />,
-  Map: <Map size={20} />, // Agregamos Map por si se usa en el menú
+  Map: <Map size={20} />,
+  Zap: <Zap size={20} />,
+  Settings: <Settings size={20} />,
+  FileText: <FileText size={20} />
 };
 
 function DashboardLayout({ children, title }: LayoutProps) {
@@ -8655,6 +9309,28 @@ function DashboardLayout({ children, title }: LayoutProps) {
   const { clients, selectedClientId, setClient, loading } = useClient();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
+  // 🛑 ESTADO PARA CONTROLAR LOS MENÚS ABIERTOS
+  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({});
+
+  // Efecto para abrir automáticamente el menú donde está la ruta actual
+  useEffect(() => {
+    const newOpenState = { ...openMenus };
+    APP_INFO.menuItems.forEach(item => {
+      if (item.children) {
+        // Si alguno de los hijos es la ruta actual, abrimos el padre
+        const isChildActive = item.children.some(child => child.path === router.pathname);
+        if (isChildActive) {
+          newOpenState[item.name] = true;
+        }
+      }
+    });
+    setOpenMenus(newOpenState);
+  }, []); // Se ejecuta solo al montar
+
+  const toggleMenu = (name: string) => {
+    setOpenMenus(prev => ({ ...prev, [name]: !prev[name] }));
+  };
+
   const handleLogout = async () => {
     try {
       await auth.signOut();
@@ -8664,9 +9340,92 @@ function DashboardLayout({ children, title }: LayoutProps) {
     }
   };
 
+  // --- COMPONENTE DE RENDERIZADO DE ITEM DE MENÚ ---
+  const renderMenuItem = (item: MenuItem) => {
+    const hasChildren = item.children && item.children.length > 0;
+    const isOpen = openMenus[item.name];
+    
+    // Verificamos si este item (o sus hijos) está activo
+    const isActiveParent = hasChildren && item.children?.some(child => child.path === router.pathname);
+    const isActive = router.pathname === item.path;
+
+    // 1. SI TIENE HIJOS (ES UN GRUPO)
+    if (hasChildren) {
+      return (
+        <div key={item.name} className="mb-1">
+          <button
+            onClick={() => toggleMenu(item.name)}
+            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all duration-200 group ${
+              isActiveParent 
+                ? 'bg-indigo-50/50 text-indigo-700 font-semibold' 
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 font-medium'
+            }`}
+          >
+            <div className="flex items-center space-x-3">
+              <span className={`transition-colors ${isActiveParent ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'}`}>
+                {iconMap[item.icon] || <Settings size={20} />}
+              </span>
+              <span className="text-sm">{item.name}</span>
+            </div>
+            {/* Flecha de rotación */}
+            <div className={`transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}>
+               <ChevronRight size={16} className="text-slate-400"/>
+            </div>
+          </button>
+
+          {/* Renderizado de Hijos (Submenú) */}
+          {isOpen && (
+            <div className="mt-1 ml-4 border-l-2 border-slate-100 space-y-1">
+              {item.children!.map(child => {
+                const isChildActive = router.pathname === child.path;
+                return (
+                  <button
+                    key={child.path}
+                    onClick={() => {
+                      if (child.path) router.push(child.path);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center space-x-3 px-3 py-2 rounded-r-lg transition-all duration-200 ml-1 ${
+                      isChildActive 
+                        ? 'bg-indigo-50 text-indigo-700 font-bold border-l-4 border-indigo-600 -ml-[5px]' // Efecto visual activo
+                        : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className={`text-sm ${isChildActive ? 'ml-0' : 'ml-0'}`}>{child.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // 2. SI ES UN ITEM SIMPLE (SIN HIJOS)
+    return (
+      <button
+        key={item.path}
+        onClick={() => {
+          if (item.path) router.push(item.path);
+          setIsMobileMenuOpen(false);
+        }}
+        className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg transition-all duration-200 group mb-1 ${
+          isActive 
+            ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-sm ring-1 ring-indigo-200' 
+            : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 font-medium'
+        }`}
+      >
+        <span className={`transition-colors ${isActive ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'}`}>
+          {iconMap[item.icon] || <Settings size={20} />}
+        </span>
+        <span className="text-sm">{item.name}</span>
+      </button>
+    );
+  };
+
   const SidebarContent = () => (
     <>
-      {/* 1. Header de Identidad: BacarPlan */}
+      {/* Header */}
       <div className="h-16 flex items-center px-6 border-b border-slate-100 bg-white">
         <div>
           <h1 className="text-xl font-extrabold text-indigo-700 tracking-tight">
@@ -8680,7 +9439,7 @@ function DashboardLayout({ children, title }: LayoutProps) {
         </div>
       </div>
 
-      {/* 2. Selector de Contexto (Empresa Cliente / Global) */}
+      {/* Contexto */}
       <div className="px-4 py-4 border-b border-slate-100 bg-slate-50/50">
           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">
             Contexto Operativo
@@ -8694,9 +9453,7 @@ function DashboardLayout({ children, title }: LayoutProps) {
                     onChange={(e) => setClient(e.target.value)}
                     className={`w-full text-sm border-slate-200 rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 py-2 pl-2 pr-8 appearance-none cursor-pointer truncate font-medium ${selectedClientId === '' ? 'bg-indigo-50 text-indigo-700 font-bold border-indigo-200' : 'bg-white text-slate-700'}`}
                 >
-                    {/* 🛑 OPCIÓN GLOBAL: Permite ver todo el mapa/operación */}
                     <option value="">🏢 Ver Toda la Operación</option>
-                    
                     <optgroup label="Clientes Específicos">
                         {clients.map(c => (
                             <option key={c.id} value={c.id}>{c.businessName}</option>
@@ -8706,38 +9463,16 @@ function DashboardLayout({ children, title }: LayoutProps) {
                 <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
                   <ChevronDown size={14} />
                 </div>
-            </div>
+              </div>
           )}
       </div>
 
-      {/* 3. Navegación Dinámica */}
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {APP_INFO.menuItems.map((item) => {
-          // La ruta activa se determina por el path de Next.js
-          const isActive = router.pathname === item.path;
-          return (
-            <button
-              key={item.path}
-              onClick={() => {
-                router.push(item.path);
-                setIsMobileMenuOpen(false);
-              }}
-              className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg transition-all duration-200 group ${
-                isActive 
-                  ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-sm ring-1 ring-indigo-200' 
-                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 font-medium'
-              }`}
-            >
-              <span className={`transition-colors ${isActive ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'}`}>
-                {iconMap[item.icon] || <Settings size={20} />}
-              </span>
-              <span className="text-sm">{item.name}</span>
-            </button>
-          )
-        })}
+      {/* Navegación (Renderizado Dinámico) */}
+      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+        {APP_INFO.menuItems.map(item => renderMenuItem(item))}
       </nav>
 
-      {/* 4. Footer Logout */}
+      {/* Footer */}
       <div className="p-4 border-t border-slate-100 mt-auto bg-white">
         <button onClick={handleLogout} className="flex items-center space-x-3 text-rose-600 hover:bg-rose-50 w-full px-3 py-2.5 rounded-lg transition-colors text-sm font-medium group">
           <LogOut size={20} className="group-hover:text-rose-700" />
@@ -8779,13 +9514,11 @@ function DashboardLayout({ children, title }: LayoutProps) {
             <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden -ml-2 p-2 text-slate-500 hover:text-indigo-600 rounded-md">
               <Menu className="w-6 h-6" />
             </button>
-            {/* Título de la página, pasado como prop */}
             <h2 className="text-lg font-bold text-slate-800 truncate leading-tight">{title}</h2>
           </div>
           <div className="flex items-center space-x-4">
-             {/* Avatar Placeholder */}
              <div className="h-9 w-9 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-700 font-bold text-sm border border-indigo-100 shadow-sm">
-                AD
+               AD
              </div>
           </div>
         </header>
@@ -8806,21 +9539,57 @@ export default DashboardLayout;
 ================================================================================
 FILE: apps\web\src\config\app.config.ts
 ================================================================================
+// Archivo: apps/web/src/config/app.config.ts
+
+import { ReactNode } from 'react';
+
+// Definición de tipos para el menú
+export interface MenuItem {
+  name: string;
+  path?: string; // Opcional si es un padre agrupador
+  icon: string;
+  children?: MenuItem[]; // 🛑 NUEVO: Soporte para submenús
+}
+
 export const APP_INFO = {
   name: 'BacarPlan',
-  version: '1.2.0',
+  version: '1.3.0',
   description: 'Sistema Integral de Gestión Operativa',
   menuItems: [
-    { name: 'Panel de Control', path: '/admin/dashboard', icon: 'LayoutDashboard' },
-    // 🛑 NUEVO: Centro de Operaciones (Mapa)
-    { name: 'Centro de Operaciones', path: '/admin/operations/map', icon: 'Map' },
-    { name: 'Empresas / Clientes', path: '/admin/clients', icon: 'Building2' },
-    { name: 'Objetivos', path: '/admin/objective-management', icon: 'Target' },
-    { name: 'RRHH / Empleados', path: '/admin/employees', icon: 'Users' },
-    { name: 'Novedades (Ausencias)', path: '/admin/rrhh/novedades', icon: 'CalendarDays' },
-    { name: 'Usuarios Sistema', path: '/admin/system-users', icon: 'ShieldCheck' },
-    { name: 'Diagnóstico', path: '/admin/status', icon: 'Activity' },
-  ]
+    { 
+      name: 'Planificación', 
+      icon: 'CalendarDays',
+      children: [
+        { name: 'Calendario (Grid)', path: '/admin/dashboard', icon: 'LayoutDashboard' },
+        { name: 'Cronograma (Gantt)', path: '/admin/planning/gantt', icon: 'Zap' },
+      ]
+    },
+    { 
+      name: 'Operaciones', 
+      icon: 'Map',
+      children: [
+        { name: 'Torre de Control', path: '/admin/operations/map', icon: 'Map' },
+      ]
+    },
+    { 
+      name: 'Gestión', 
+      icon: 'Building2',
+      children: [
+        { name: 'Empresas / Clientes', path: '/admin/clients', icon: 'Building2' },
+        { name: 'Sedes / Objetivos', path: '/admin/objective-management', icon: 'Target' },
+        { name: 'Personal / RRHH', path: '/admin/employees', icon: 'Users' },
+        { name: 'Novedades (Licencias)', path: '/admin/rrhh/novedades', icon: 'FileText' },
+      ]
+    },
+    { 
+      name: 'Configuración', 
+      icon: 'Settings',
+      children: [
+        { name: 'Usuarios Sistema', path: '/admin/system-users', icon: 'ShieldCheck' },
+        { name: 'Diagnóstico', path: '/admin/status', icon: 'Activity' },
+      ]
+    },
+  ] as MenuItem[]
 };
 
 ================================================================================
