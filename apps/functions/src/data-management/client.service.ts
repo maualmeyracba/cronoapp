@@ -195,3 +195,6 @@ export class ClientService {
     await db.collection(COLL_SHIFT_TYPES).doc(id).delete();
   }
 }
+
+
+

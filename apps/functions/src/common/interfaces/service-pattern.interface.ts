@@ -39,3 +39,6 @@ export interface IPatternPayload {
   validFrom: string; // ISO String
   validTo?: string;  // ISO String
 }
+
+
+

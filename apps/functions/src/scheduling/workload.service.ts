@@ -4,8 +4,8 @@ import { IEmployee } from '../common/interfaces/employee.interface';
 import { IAbsence } from '../common/interfaces/absence.interface';
 import { IShift } from '../common/interfaces/shift.interface';
 import { startOfWeek, endOfWeek, isSunday, isSaturday, getHours } from 'date-fns';
-// Importamos el servicio de convenios para leer reglas dinámicas
-import { LaborAgreementService } from '../data-management/labor-agreement.service';
+// 🛑 IMPORTANTE: Asegúrate de que este archivo exista en src/common/constants/labor-rules.ts
+import { LABOR_RULES } from '../common/constants/labor-rules';
 
 const EMPLOYEES_COLLECTION = 'empleados';
 const ABSENCES_COLLECTION = 'ausencias';
@@ -15,11 +15,8 @@ const SHIFTS_COLLECTION = 'turnos';
 export class WorkloadService {
   private getDb = () => admin.app().firestore();
 
-  constructor(private readonly agreementService: LaborAgreementService) {}
-
   /**
    * Helper para normalizar fechas de cualquier formato a Date nativo.
-   * Fundamental para evitar errores de cálculo de tiempo.
    */
   private toDate(val: any): Date {
       if (!val) return new Date();
@@ -79,44 +76,53 @@ export class WorkloadService {
 
     console.log(`🔍 [Workload] Validando para: ${employee.name} (${employeeId}) | Convenio: ${employee.laborAgreement || 'SUVICO'}`);
 
-    // 2. Obtener Reglas del Convenio (Base de Datos Dinámica)
-    const agreementCode = employee.laborAgreement || 'SUVICO';
-    let rules = await this.agreementService.getAgreementByCode(agreementCode);
-    
-    // Fallback de seguridad si no hay reglas cargadas
-    if (!rules) {
-        console.warn(`⚠️ No se encontraron reglas para ${agreementCode}, usando defaults.`);
-        rules = { maxHoursWeekly: 48, maxHoursMonthly: 200, saturdayCutoffHour: 13 } as any; 
-    }
-
-    // 3. Validar Solapamiento (Conflictos de horario)
+    // 2. Validar Solapamiento (Conflictos de horario)
     const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd, excludeShiftId);
     if (conflicts.length > 0) {
         throw new ConflictException(`¡CONFLICTO! Ya tiene un turno asignado en ese horario.`);
     }
 
-    // 4. Validar Disponibilidad (Ausencias / Licencias)
+    // 3. Validar Disponibilidad (Ausencias / Licencias)
     await this.checkAvailability(employeeId, shiftStart, shiftEnd);
 
-    // 5. 🛑 NUEVO: Validar Límite SEMANAL (48hs o lo que diga el convenio)
-    await this.checkWeeklyLimit(employeeId, shiftStart, shiftEnd, rules.maxHoursWeekly, excludeShiftId);
-
-    // 6. Validar Límite MENSUAL (Soft Block con Ciclo)
+    // 4. Validar Límite Mensual de Horas (Soft Block con Ciclo)
     await this.checkMonthlyLimit(employee, shiftStart, shiftEnd, excludeShiftId);
 
-    // 7. CÁLCULO DE NÓMINA (Reglas de Convenio para costos)
-    const breakdown = await this.calculateShiftBreakdown(employee, startOfWeek(shiftStart), shiftStart, shiftEnd, rules);
+    // 5. CÁLCULO DE NÓMINA (Reglas de Convenio)
+    const breakdown = await this.calculateShiftBreakdown(employee, shiftStart, shiftEnd, excludeShiftId);
     
     return breakdown;
   }
 
   /**
-   * Valida que el empleado no supere el límite de horas semanales (Lunes a Domingo).
+   * MOTOR DE REGLAS LABORALES: Calcula horas normales, extras 50%, 100% según convenio.
    */
-  private async checkWeeklyLimit(employeeId: string, start: Date, end: Date, limitWeekly: number, excludeShiftId?: string) {
-      const db = this.getDb();
+  async calculateShiftBreakdown(employee: IEmployee, start: Date, end: Date, excludeShiftId?: string) {
+      // Switch de Convenios
+      const agreement = employee.laborAgreement || 'SUVICO';
       
-      // Semana ISO: Lunes 00:00 a Domingo 23:59
+      switch (agreement) {
+          case 'SUVICO':
+              return this.calculateSuvicoRules(employee.uid, start, end, excludeShiftId);
+          case 'COMERCIO':
+              return this.calculateStandardRules(start, end); 
+          case 'UOCRA':
+              return this.calculateStandardRules(start, end); 
+          case 'FUERA_CONVENIO':
+              return this.calculateStandardRules(start, end);
+          default:
+              return this.calculateStandardRules(start, end);
+      }
+  }
+
+  /**
+   * Reglas Específicas para Seguridad Privada (CCT 422/05)
+   */
+  private async calculateSuvicoRules(employeeId: string, start: Date, end: Date, excludeShiftId?: string) {
+      const db = this.getDb();
+      const rules = LABOR_RULES['SUVICO'];
+
+      // 1. Calcular acumulado de la SEMANA (Lunes a Domingo) para regla de 48hs
       const weekStart = startOfWeek(start, { weekStartsOn: 1 });
       const weekEnd = endOfWeek(start, { weekStartsOn: 1 });
 
@@ -126,47 +132,72 @@ export class WorkloadService {
           .where('startTime', '<=', admin.firestore.Timestamp.fromDate(weekEnd))
           .get();
 
-      let accumulatedHours = 0;
+      let weeklyHours = 0;
       shiftsSnap.forEach(doc => {
-          if (excludeShiftId && doc.id === excludeShiftId) return;
+          if (doc.id === excludeShiftId) return;
           const data = doc.data();
           if (data.status === 'Canceled') return;
-          
           const s = this.toDate(data.startTime);
           const e = this.toDate(data.endTime);
-          accumulatedHours += (e.getTime() - s.getTime()) / (1000 * 60 * 60);
+          weeklyHours += (e.getTime() - s.getTime()) / (1000 * 60 * 60);
       });
 
-      const newDuration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-      const totalProjected = accumulatedHours + newDuration;
-
-      // 🛑 SI SE PASA DEL LÍMITE SEMANAL -> ALERTA
-      if (totalProjected > limitWeekly) {
-          const excess = (totalProjected - limitWeekly).toFixed(1);
-          throw new ConflictException(
-              `LÍMITE SEMANAL EXCEDIDO: ${totalProjected.toFixed(1)}h esta semana (Máx: ${limitWeekly}h). Exceso: ${excess}h.`
-          );
-      }
-  }
-
-  /**
-   * MOTOR DE CÁLCULO DE COSTOS (Normal, 50%, 100%)
-   * Se simplifica delegando en las reglas pasadas como parámetro.
-   */
-  async calculateShiftBreakdown(employee: IEmployee, weekStart: Date, start: Date, end: Date, rules: any) {
+      // Duración del nuevo turno
       const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-      
-      // Aquí se podría expandir para calcular el desglose exacto de horas al 50/100
-      // para guardarlo en la ficha del turno, pero el bloqueo preventivo ya se hizo arriba.
-      
+      const newWeeklyTotal = weeklyHours + duration;
+
+      let normal = duration;
+      let hours50 = 0;
+      let hours100 = 0;
+
+      // 2. Aplicar Regla de Exceso Semanal (>48hs)
+      if (newWeeklyTotal > rules.maxHoursWeekly!) {
+          const previousExcess = Math.max(0, weeklyHours - rules.maxHoursWeekly!);
+          const currentExcess = Math.max(0, newWeeklyTotal - rules.maxHoursWeekly!);
+          const overtime = currentExcess - previousExcess;
+          
+          normal = Math.max(0, duration - overtime);
+
+          // 3. Clasificar Extras (50 vs 100)
+          const isSun = isSunday(start);
+          const isSat = isSaturday(start);
+          const startH = getHours(start);
+
+          // Regla: Domingo o Sábado después de la hora de corte (13hs)
+          if (isSun || (isSat && startH >= rules.saturdayCutoffHour)) {
+              hours100 = overtime;
+          } else {
+              hours50 = overtime;
+          }
+      }
+
       return {
           totalDuration: duration,
-          breakdown: { normal: duration, fifty: 0, hundred: 0, night: 0 }, // Placeholder para futura expansión
-          agreementUsed: rules.code || 'STANDARD'
+          weeklyTotal: newWeeklyTotal,
+          breakdown: {
+              normal: parseFloat(normal.toFixed(2)),
+              fifty: parseFloat(hours50.toFixed(2)),
+              hundred: parseFloat(hours100.toFixed(2)),
+              night: 0 // Pendiente: Implementar cálculo exacto de minutos nocturnos
+          },
+          agreementUsed: 'SUVICO'
       };
   }
 
-  // --- VALIDACIONES AUXILIARES ---
+  /**
+   * Reglas Genéricas (Sin cálculo de extras complejo)
+   */
+  private calculateStandardRules(start: Date, end: Date) {
+      const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+      return {
+          totalDuration: duration,
+          weeklyTotal: duration,
+          breakdown: { normal: duration, fifty: 0, hundred: 0, night: 0 },
+          agreementUsed: 'STANDARD'
+      };
+  }
+
+  // --- VALIDACIONES ---
 
   async checkShiftOverlap(employeeId: string, start: Date, end: Date, excludeShiftId?: string): Promise<IShift[]> {
     const db = this.getDb();
@@ -184,7 +215,7 @@ export class WorkloadService {
 
         const sStart = this.toDate(shift.startTime);
         
-        // Verificamos intersección real
+        // Verificamos intersección real: (StartA < EndB) && (EndA > StartB)
         if (sStart.getTime() < end.getTime()) {
              conflictingShifts.push({ id: doc.id, ...shift } as unknown as IShift);
         }
@@ -248,7 +279,7 @@ export class WorkloadService {
 
     if (totalProjected > maxHours) {
       const exceeded = (totalProjected - maxHours).toFixed(1);
-      throw new ConflictException(`LÍMITE MENSUAL EXCEDIDO: ${employee.name} llega a ${totalProjected.toFixed(1)}h (Máx: ${maxHours}h). Exceso: ${exceeded}h.`);
+      throw new ConflictException(`LÍMITE EXCEDIDO: ${employee.name} llega a ${totalProjected.toFixed(1)}h (Máx: ${maxHours}h). Exceso: ${exceeded}h.`);
     }
   }
 
@@ -270,7 +301,7 @@ export class WorkloadService {
         employee?.payrollCycleEndDay || 0 
     );
     
-    // Consulta con Timestamp
+    // Consulta con Timestamp (FIX)
     const shiftsSnapshot = await db.collection(SHIFTS_COLLECTION)
       .where('employeeId', '==', employeeId)
       .where('startTime', '>=', admin.firestore.Timestamp.fromDate(cycleStart))
@@ -313,3 +344,6 @@ export class WorkloadService {
     };
   }
 }
+
+
+

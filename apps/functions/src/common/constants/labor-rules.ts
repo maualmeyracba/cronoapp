@@ -49,3 +49,6 @@ export const LABOR_RULES: Record<LaborAgreement, LaborRule> = {
         nightShiftEnd: 6
     }
 };
+
+
+

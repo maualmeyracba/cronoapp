@@ -5,21 +5,17 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
-var __metadata = (this && this.__metadata) || function (k, v) {
-    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WorkloadService = void 0;
 const common_1 = require("@nestjs/common");
 const admin = require("firebase-admin");
 const date_fns_1 = require("date-fns");
-const labor_agreement_service_1 = require("../data-management/labor-agreement.service");
+const labor_rules_1 = require("../common/constants/labor-rules");
 const EMPLOYEES_COLLECTION = 'empleados';
 const ABSENCES_COLLECTION = 'ausencias';
 const SHIFTS_COLLECTION = 'turnos';
 let WorkloadService = class WorkloadService {
-    constructor(agreementService) {
-        this.agreementService = agreementService;
+    constructor() {
         this.getDb = () => admin.app().firestore();
     }
     toDate(val) {
@@ -68,24 +64,33 @@ let WorkloadService = class WorkloadService {
             throw new common_1.BadRequestException('Empleado no encontrado');
         const employee = empDoc.data();
         console.log(`🔍 [Workload] Validando para: ${employee.name} (${employeeId}) | Convenio: ${employee.laborAgreement || 'SUVICO'}`);
-        const agreementCode = employee.laborAgreement || 'SUVICO';
-        let rules = await this.agreementService.getAgreementByCode(agreementCode);
-        if (!rules) {
-            console.warn(`⚠️ No se encontraron reglas para ${agreementCode}, usando defaults.`);
-            rules = { maxHoursWeekly: 48, maxHoursMonthly: 200, saturdayCutoffHour: 13 };
-        }
         const conflicts = await this.checkShiftOverlap(employeeId, shiftStart, shiftEnd, excludeShiftId);
         if (conflicts.length > 0) {
             throw new common_1.ConflictException(`¡CONFLICTO! Ya tiene un turno asignado en ese horario.`);
         }
         await this.checkAvailability(employeeId, shiftStart, shiftEnd);
-        await this.checkWeeklyLimit(employeeId, shiftStart, shiftEnd, rules.maxHoursWeekly, excludeShiftId);
         await this.checkMonthlyLimit(employee, shiftStart, shiftEnd, excludeShiftId);
-        const breakdown = await this.calculateShiftBreakdown(employee, (0, date_fns_1.startOfWeek)(shiftStart), shiftStart, shiftEnd, rules);
+        const breakdown = await this.calculateShiftBreakdown(employee, shiftStart, shiftEnd, excludeShiftId);
         return breakdown;
     }
-    async checkWeeklyLimit(employeeId, start, end, limitWeekly, excludeShiftId) {
+    async calculateShiftBreakdown(employee, start, end, excludeShiftId) {
+        const agreement = employee.laborAgreement || 'SUVICO';
+        switch (agreement) {
+            case 'SUVICO':
+                return this.calculateSuvicoRules(employee.uid, start, end, excludeShiftId);
+            case 'COMERCIO':
+                return this.calculateStandardRules(start, end);
+            case 'UOCRA':
+                return this.calculateStandardRules(start, end);
+            case 'FUERA_CONVENIO':
+                return this.calculateStandardRules(start, end);
+            default:
+                return this.calculateStandardRules(start, end);
+        }
+    }
+    async calculateSuvicoRules(employeeId, start, end, excludeShiftId) {
         const db = this.getDb();
+        const rules = labor_rules_1.LABOR_RULES['SUVICO'];
         const weekStart = (0, date_fns_1.startOfWeek)(start, { weekStartsOn: 1 });
         const weekEnd = (0, date_fns_1.endOfWeek)(start, { weekStartsOn: 1 });
         const shiftsSnap = await db.collection(SHIFTS_COLLECTION)
@@ -93,30 +98,56 @@ let WorkloadService = class WorkloadService {
             .where('startTime', '>=', admin.firestore.Timestamp.fromDate(weekStart))
             .where('startTime', '<=', admin.firestore.Timestamp.fromDate(weekEnd))
             .get();
-        let accumulatedHours = 0;
+        let weeklyHours = 0;
         shiftsSnap.forEach(doc => {
-            if (excludeShiftId && doc.id === excludeShiftId)
+            if (doc.id === excludeShiftId)
                 return;
             const data = doc.data();
             if (data.status === 'Canceled')
                 return;
             const s = this.toDate(data.startTime);
             const e = this.toDate(data.endTime);
-            accumulatedHours += (e.getTime() - s.getTime()) / (1000 * 60 * 60);
+            weeklyHours += (e.getTime() - s.getTime()) / (1000 * 60 * 60);
         });
-        const newDuration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-        const totalProjected = accumulatedHours + newDuration;
-        if (totalProjected > limitWeekly) {
-            const excess = (totalProjected - limitWeekly).toFixed(1);
-            throw new common_1.ConflictException(`LÍMITE SEMANAL EXCEDIDO: ${totalProjected.toFixed(1)}h esta semana (Máx: ${limitWeekly}h). Exceso: ${excess}h.`);
+        const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+        const newWeeklyTotal = weeklyHours + duration;
+        let normal = duration;
+        let hours50 = 0;
+        let hours100 = 0;
+        if (newWeeklyTotal > rules.maxHoursWeekly) {
+            const previousExcess = Math.max(0, weeklyHours - rules.maxHoursWeekly);
+            const currentExcess = Math.max(0, newWeeklyTotal - rules.maxHoursWeekly);
+            const overtime = currentExcess - previousExcess;
+            normal = Math.max(0, duration - overtime);
+            const isSun = (0, date_fns_1.isSunday)(start);
+            const isSat = (0, date_fns_1.isSaturday)(start);
+            const startH = (0, date_fns_1.getHours)(start);
+            if (isSun || (isSat && startH >= rules.saturdayCutoffHour)) {
+                hours100 = overtime;
+            }
+            else {
+                hours50 = overtime;
+            }
         }
+        return {
+            totalDuration: duration,
+            weeklyTotal: newWeeklyTotal,
+            breakdown: {
+                normal: parseFloat(normal.toFixed(2)),
+                fifty: parseFloat(hours50.toFixed(2)),
+                hundred: parseFloat(hours100.toFixed(2)),
+                night: 0
+            },
+            agreementUsed: 'SUVICO'
+        };
     }
-    async calculateShiftBreakdown(employee, weekStart, start, end, rules) {
+    calculateStandardRules(start, end) {
         const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
         return {
             totalDuration: duration,
+            weeklyTotal: duration,
             breakdown: { normal: duration, fifty: 0, hundred: 0, night: 0 },
-            agreementUsed: rules.code || 'STANDARD'
+            agreementUsed: 'STANDARD'
         };
     }
     async checkShiftOverlap(employeeId, start, end, excludeShiftId) {
@@ -179,7 +210,7 @@ let WorkloadService = class WorkloadService {
         const maxHours = Number(employee.maxHoursPerMonth) || 176;
         if (totalProjected > maxHours) {
             const exceeded = (totalProjected - maxHours).toFixed(1);
-            throw new common_1.ConflictException(`LÍMITE MENSUAL EXCEDIDO: ${employee.name} llega a ${totalProjected.toFixed(1)}h (Máx: ${maxHours}h). Exceso: ${exceeded}h.`);
+            throw new common_1.ConflictException(`LÍMITE EXCEDIDO: ${employee.name} llega a ${totalProjected.toFixed(1)}h (Máx: ${maxHours}h). Exceso: ${exceeded}h.`);
         }
     }
     async getWorkloadReport(employeeId, month, year) {
@@ -228,7 +259,6 @@ let WorkloadService = class WorkloadService {
 };
 exports.WorkloadService = WorkloadService;
 exports.WorkloadService = WorkloadService = __decorate([
-    (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [labor_agreement_service_1.LaborAgreementService])
+    (0, common_1.Injectable)()
 ], WorkloadService);
 //# sourceMappingURL=workload.service.js.map

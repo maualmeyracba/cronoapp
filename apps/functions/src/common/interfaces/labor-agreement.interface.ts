@@ -17,3 +17,6 @@ export interface ILaborAgreement {
     isActive: boolean;
     createdAt?: admin.firestore.Timestamp;
 }
+
+
+

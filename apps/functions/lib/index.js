@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.checkSystemHealth = exports.manageAgreements = exports.managePatterns = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.manageShifts = exports.scheduleShift = exports.createUser = void 0;
+exports.reportarAusencia = exports.registrarFichadaManual = exports.limpiarBaseDeDatos = exports.crearUsuarioSistema = exports.checkSystemHealth = exports.manageAgreements = exports.managePatterns = exports.manageAbsences = exports.manageSystemUsers = exports.manageEmployees = exports.manageHierarchy = exports.manageData = exports.auditShift = exports.manageShifts = exports.scheduleShift = exports.createUser = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const main_1 = require("./main");
@@ -382,6 +382,96 @@ exports.checkSystemHealth = functions.https.onCall(async (data, context) => {
                 error: error.message
             }
         };
+    }
+});
+exports.crearUsuarioSistema = functions.https.onCall(async (data, context) => {
+    if (!context.auth)
+        throw new functions.https.HttpsError("unauthenticated", "Sin permisos.");
+    const { email, password, firstName, lastName, role } = data;
+    try {
+        const userRecord = await admin.auth().createUser({
+            email,
+            password,
+            displayName: `${firstName} ${lastName}`
+        });
+        await admin.auth().setCustomUserClaims(userRecord.uid, { role, type: 'SYSTEM' });
+        await admin.firestore().collection("system_users").doc(userRecord.uid).set({
+            uid: userRecord.uid,
+            firstName,
+            lastName,
+            email,
+            role,
+            status: 'ACTIVE',
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return { success: true };
+    }
+    catch (error) {
+        throw new functions.https.HttpsError("internal", error.message);
+    }
+});
+exports.limpiarBaseDeDatos = functions.runWith({ timeoutSeconds: 540 }).https.onCall(async (data, context) => {
+    if (!context.auth)
+        throw new functions.https.HttpsError("unauthenticated", "Rechazado.");
+    const { target } = data;
+    const db = admin.firestore();
+    let path = "";
+    if (target === 'AUDIT')
+        path = 'historial_operaciones';
+    else if (target === 'SHIFTS')
+        path = 'turnos';
+    else
+        throw new functions.https.HttpsError("invalid-argument", "Target inválido");
+    await db.recursiveDelete(db.collection(path));
+    return { success: true };
+});
+exports.registrarFichadaManual = functions.https.onCall(async (data, context) => {
+    if (!context.auth)
+        throw new functions.https.HttpsError("unauthenticated", "Sin permisos.");
+    const { shiftId, notes, method } = data;
+    const db = admin.firestore();
+    try {
+        const shiftRef = db.collection('turnos').doc(shiftId);
+        const shiftDoc = await shiftRef.get();
+        if (!shiftDoc.exists)
+            throw new Error("Turno no encontrado");
+        await shiftRef.update({
+            status: 'PRESENT',
+            checkInTime: admin.firestore.FieldValue.serverTimestamp(),
+            checkInMethod: method || 'MANUAL',
+            checkInOperator: context.auth.uid,
+            operatorNotes: notes || ''
+        });
+        await db.collection('audit_logs').add({
+            action: 'MANUAL_CHECKIN',
+            shiftId,
+            operator: context.auth.uid,
+            timestamp: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return { success: true };
+    }
+    catch (error) {
+        throw new functions.https.HttpsError("internal", error.message);
+    }
+});
+exports.reportarAusencia = functions.https.onCall(async (data, context) => {
+    if (!context.auth)
+        throw new functions.https.HttpsError("unauthenticated", "Sin permisos.");
+    const { shiftId, reason, type } = data;
+    const db = admin.firestore();
+    try {
+        const shiftRef = db.collection('turnos').doc(shiftId);
+        await shiftRef.update({
+            status: 'ABSENT',
+            absenceType: type || 'NO_SHOW',
+            absenceReason: reason || '',
+            absenceReportedBy: context.auth.uid,
+            absenceReportedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        return { success: true };
+    }
+    catch (error) {
+        throw new functions.https.HttpsError("internal", error.message);
     }
 });
 //# sourceMappingURL=index.js.map

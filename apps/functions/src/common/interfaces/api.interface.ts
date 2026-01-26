@@ -12,3 +12,6 @@ export interface IEmployee {
   role: string;
   // Añadir cualquier otro campo relevante (ej: maxHoursPerMonth, email)
 }
+
+
+

@@ -30,3 +30,6 @@ export interface IShift {
   role?: string;           // Ej: 'Vigilador'
   isOvertime?: boolean;    // 🛑 NUEVO: Indica si el turno fue autorizado con exceso de horas
 }
+
+
+

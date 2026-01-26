@@ -95,3 +95,6 @@ export class AbsenceService {
         return { id: newAbsenceRef.id, ...newAbsence, impactedShiftsCount: shiftsConvertedToVacancy };
     }
 }
+
+
+

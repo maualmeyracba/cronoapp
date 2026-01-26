@@ -86,3 +86,6 @@ export interface IShiftType {
   /** Requisitos específicos (Opcional). Ej: "Vigilador Armado", "Chofer" */
   requiredRole?: string; 
 }
+
+
+

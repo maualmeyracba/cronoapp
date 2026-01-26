@@ -12,3 +12,6 @@ import { AuthService } from './auth.service';
   exports: [AuthService], // Exportamos el servicio para que otros módulos lo utilicen.
 })
 export class AuthModule {}
+
+
+

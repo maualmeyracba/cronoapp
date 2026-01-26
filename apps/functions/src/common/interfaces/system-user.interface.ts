@@ -36,3 +36,6 @@ export interface ISystemUser {
   createdAt: admin.firestore.Timestamp;
   lastLogin?: admin.firestore.Timestamp;
 }
+
+
+

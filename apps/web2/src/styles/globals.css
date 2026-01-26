@@ -1,0 +1,206 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply transition-colors duration-300;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-black tracking-tighter;
+  }
+}
+
+/* --- REGLAS DE COLORES POR TEMA --- */
+
+/* 1. ENTERPRISE (Light Default) */
+.enterprise body {
+  background-color: #f8fafc; /* Slate 50 */
+  color: #0f172a; /* Slate 900 */
+}
+
+/* 2. MODERN SOFT (Light Suave) */
+.modern body {
+  background-color: #f3f4f6; /* Gray 100 (Un poco más cálido que Slate) */
+  color: #374151; /* Gray 700 (Texto no tan negro, más suave) */
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.modern .bg-white {
+  background-color: #ffffff !important;
+  border: none !important; /* Sin bordes duros */
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01) !important; /* Sombras difusas */
+  border-radius: 1.5rem !important; /* Bordes extra redondeados */
+}
+.modern .bg-slate-50 {
+  background-color: #f9fafb !important; /* Gray 50 */
+}
+.modern input, .modern select, .modern textarea {
+  background-color: #f9fafb !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 1rem !important;
+}
+
+/* 3. TACTICAL DARK (Slate) */
+.tactical body {
+  background-color: #0f172a; 
+  color: #f1f5f9;
+}
+.tactical .bg-white {
+  background-color: #1e293b !important;
+  border-color: #334155 !important;
+}
+
+/* 4. MIDNIGHT (Blue) */
+.midnight body {
+  background-color: #020420;
+  color: #e0e7ff;
+}
+.midnight .bg-white {
+  background-color: #0f172a !important;
+  border-color: #1e3a8a !important;
+}
+.midnight .text-indigo-600 { color: #60a5fa !important; }
+
+/* 5. OLED (Black) */
+.oled body {
+  background-color: #000000;
+  color: #ffffff;
+}
+.oled .bg-white {
+  background-color: #121212 !important;
+  border-color: #333333 !important;
+}
+.oled .bg-slate-50 { background-color: #000000 !important; }
+
+/* --- CORRECCIONES GLOBALES MODO OSCURO --- */
+.dark input, .dark select, .dark textarea {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+}
+.dark .text-slate-900, .dark .text-slate-800 { color: #ffffff !important; }
+.dark .text-slate-500, .dark .text-slate-400 { color: #94a3b8 !important; }
+.dark .bg-slate-100 { background-color: rgba(255, 255, 255, 0.1) !important; color: #fff !important; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+.dark ::-webkit-scrollbar-thumb { background: #334155; }
+
+
+/* =========================================
+   TEMAS PERSONALIZADOS (INYECTADOS)
+   ========================================= */
+
+/* --- MEJORA DE LEGIBILIDAD TEMA CLARO --- */
+/* Hace que los grises claros sean más oscuros para leer mejor */
+body:not(.dark):not(.theme-blue):not(.theme-contrast) .text-slate-500 {
+    color: #475569 !important; /* Slate-600 */
+}
+body:not(.dark):not(.theme-blue):not(.theme-contrast) .text-slate-400 {
+    color: #64748b !important; /* Slate-500 */
+}
+
+/* --- TEMA ALTO CONTRASTE (NEGRO/AMARILLO) --- */
+.theme-contrast body {
+    background-color: #000000 !important;
+    color: #FFD700 !important; /* Dorado */
+}
+
+/* Forzar fondos negros y bordes blancos en tarjetas */
+.theme-contrast .bg-white, 
+.theme-contrast .bg-slate-50, 
+.theme-contrast .bg-slate-100,
+.theme-contrast .bg-indigo-50 {
+    background-color: #000000 !important;
+    border: 1px solid #FFFFFF !important;
+    color: #FFD700 !important;
+}
+
+/* Forzar textos a blanco o amarillo */
+.theme-contrast .text-slate-500,
+.theme-contrast .text-slate-600,
+.theme-contrast .text-slate-800,
+.theme-contrast .text-gray-500,
+.theme-contrast .text-indigo-600,
+.theme-contrast .text-indigo-700,
+.theme-contrast .text-indigo-900 {
+    color: #FFFFFF !important;
+}
+
+/* Botones con borde evidente */
+.theme-contrast button {
+    border: 2px solid #FFD700 !important;
+}
+
+/* --- TEMA AZUL PRO (NAVY POLICIAL) --- */
+.theme-blue body {
+    background-color: #0f172a !important; /* Slate 900 (Azulado) */
+    color: #e2e8f0 !important; /* Slate 200 */
+}
+
+/* Tarjetas Azul Profundo */
+.theme-blue .bg-white,
+.theme-blue .bg-slate-50,
+.theme-blue .bg-indigo-50 {
+    background-color: #1e293b !important; /* Slate 800 */
+    border-color: #334155 !important; /* Slate 700 */
+    color: white !important;
+}
+
+/* Textos suavizados para fondo oscuro */
+.theme-blue .text-slate-500,
+.theme-blue .text-slate-600,
+.theme-blue .text-slate-800,
+.theme-blue .text-indigo-900 {
+    color: #94a3b8 !important; /* Slate 400 */
+}
+
+.theme-blue .text-indigo-600,
+.theme-blue .text-indigo-700 {
+    color: #60a5fa !important; /* Blue 400 */
+}
+
+.theme-blue aside {
+    background-color: #172554 !important; /* Blue 950 */
+    border-right: 1px solid #1e3a8a !important;
+}
+
+
+/* --- FIX DE IMPRESIÓN (CRONOAPP) --- */
+@media print {
+  @page {
+    margin: 0;
+    size: auto;
+  }
+  
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    background-color: white !important;
+  }
+
+  /* Ocultar Sidebar, Headers y Navegación automáticamente */
+  aside, nav, header, .no-print {
+    display: none !important;
+  }
+
+  /* Asegurar que el contenido principal ocupe todo el ancho */
+  main, #root, #__next {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+  
+  /* Evitar cortes feos en tablas y tarjetas */
+  .break-inside-avoid {
+    break-inside: avoid;
+  }
+  
+  /* Ocultar barras de scroll si aparecen */
+  * {
+    overflow: visible !important;
+  }
+}

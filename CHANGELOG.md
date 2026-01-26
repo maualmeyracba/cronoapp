@@ -36,3 +36,6 @@ y este proyecto adhiere a Semantic Versioning.
 ## [1.0.0] - 2025-11-20
 - Lanzamiento inicial del MVP.
 - Funcionalidades básicas: Login, Dashboard Admin, Scheduler Drag & Drop.
+
+
+

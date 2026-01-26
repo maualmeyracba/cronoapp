@@ -62,3 +62,6 @@ export class GeofencingService {
     return distance <= GEOFENCE_RADIUS_KM;
   }
 }
+
+
+

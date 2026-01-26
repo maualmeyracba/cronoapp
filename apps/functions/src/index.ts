@@ -481,3 +481,121 @@ export const checkSystemHealth = functions.https.onCall(async (data, context) =>
     };
   }
 });
+
+
+
+
+
+// --- FUNCIONES DE SISTEMA INYECTADAS POR SCRIPT ---
+
+// 1. Crear Usuario de SISTEMA (Admin, RRHH, etc)
+export const crearUsuarioSistema = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Sin permisos.");
+  
+  const { email, password, firstName, lastName, role } = data;
+
+  try {
+    const userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName: `${firstName} ${lastName}`
+    });
+
+    await admin.auth().setCustomUserClaims(userRecord.uid, { role, type: 'SYSTEM' });
+
+    await admin.firestore().collection("system_users").doc(userRecord.uid).set({
+      uid: userRecord.uid,
+      firstName,
+      lastName,
+      email,
+      role,
+      status: 'ACTIVE',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { success: true };
+  } catch (error: any) {
+    throw new functions.https.HttpsError("internal", error.message);
+  }
+});
+
+// 2. Limpieza Masiva (Zona de Peligro)
+export const limpiarBaseDeDatos = functions.runWith({ timeoutSeconds: 540 }).https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Rechazado.");
+    
+    const { target } = data; 
+    const db = admin.firestore();
+    let path = "";
+
+    if (target === 'AUDIT') path = 'historial_operaciones';
+    else if (target === 'SHIFTS') path = 'turnos';
+    else throw new functions.https.HttpsError("invalid-argument", "Target inválido");
+
+    await db.recursiveDelete(db.collection(path));
+    return { success: true };
+});
+
+
+// --- OPERATIVA: FICHADAS MANUALES Y RRHH ---
+
+// 1. Fichada Manual (Operador de Radio / Supervisor)
+export const registrarFichadaManual = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Sin permisos.");
+    
+    // data: { shiftId, notes, method: 'RADIO' | 'PHONE' }
+    const { shiftId, notes, method } = data;
+    const db = admin.firestore();
+
+    try {
+        const shiftRef = db.collection('turnos').doc(shiftId);
+        const shiftDoc = await shiftRef.get();
+
+        if (!shiftDoc.exists) throw new Error("Turno no encontrado");
+
+        // Actualizamos el turno a estado "PRESENT"
+        await shiftRef.update({
+            status: 'PRESENT',
+            checkInTime: admin.firestore.FieldValue.serverTimestamp(),
+            checkInMethod: method || 'MANUAL', // 'RADIO', 'PHONE', 'WHATSAPP'
+            checkInOperator: context.auth.uid, // Quién validó la fichada
+            operatorNotes: notes || ''
+        });
+
+        // Log de auditoría (opcional)
+        await db.collection('audit_logs').add({
+            action: 'MANUAL_CHECKIN',
+            shiftId,
+            operator: context.auth.uid,
+            timestamp: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        return { success: true };
+    } catch (error: any) {
+        throw new functions.https.HttpsError("internal", error.message);
+    }
+});
+
+// 2. Reporte de Ausencia (RRHH / Operador)
+export const reportarAusencia = functions.https.onCall(async (data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError("unauthenticated", "Sin permisos.");
+
+    // data: { shiftId, reason, type: 'SICK' | 'NO_SHOW' | 'LATE' }
+    const { shiftId, reason, type } = data;
+    const db = admin.firestore();
+
+    try {
+        const shiftRef = db.collection('turnos').doc(shiftId);
+        
+        await shiftRef.update({
+            status: 'ABSENT',
+            absenceType: type || 'NO_SHOW', // Enfermedad, Faltazo, etc.
+            absenceReason: reason || '',
+            absenceReportedBy: context.auth.uid,
+            absenceReportedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        return { success: true };
+    } catch (error: any) {
+        throw new functions.https.HttpsError("internal", error.message);
+    }
+});

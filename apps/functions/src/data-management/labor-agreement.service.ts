@@ -79,3 +79,6 @@ export class LaborAgreementService {
         return snap.docs[0].data() as ILaborAgreement;
     }
 }
+
+
+

@@ -26,3 +26,6 @@ export interface IAbsencePayload {
   endDate: admin.firestore.Timestamp | Date;
   reason: string;
 }
+
+
+

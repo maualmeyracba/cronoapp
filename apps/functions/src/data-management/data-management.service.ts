@@ -66,3 +66,6 @@ export class DataManagementService {
       return doc.data() as IObjective;
   }
 }
+
+
+

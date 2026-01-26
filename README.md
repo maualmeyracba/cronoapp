@@ -39,3 +39,6 @@ Para compilar y observar cambios en el backend TypeScript:
 npm run build --prefix apps/functions -- --watch
 # O para levantar emuladores (si están configurados)
 npm run serve --prefix apps/functions
+
+
+
