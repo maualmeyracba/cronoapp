@@ -5,5 +5,5 @@
   "/test-schema": "pages/test-schema.js",
   "/admin/operaciones": "pages/admin/operaciones.js",
   "/admin/cotizador": "pages/admin/cotizador.js",
-  "/admin/crm": "pages/admin/crm.js"
+  "/admin/planificacion": "pages/admin/planificacion.js"
 }
