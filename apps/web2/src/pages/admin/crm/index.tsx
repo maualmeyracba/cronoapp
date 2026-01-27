@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
+import { useRouter } from 'next/router';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { db } from '@/lib/firebase';
 import { 
@@ -10,7 +11,7 @@ import {
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { Toaster, toast } from 'sonner';
 import { 
-    Users, Building2, MapPin, Phone, Mail, Search, Plus, 
+    Users, Calculator, Building2, MapPin, Phone, Mail, Search, Plus, 
     Trash2, Briefcase, Send, Edit2, Save, X, ExternalLink, User,
     Bug, Crosshair, Navigation, CreditCard, Hash, ShieldCheck, Globe, Map, Link as LinkIcon
 } from 'lucide-react';
@@ -19,6 +20,7 @@ import {
 const GOOGLE_MAPS_API_KEY = "AIzaSyA0Nl6OOJI8swRVQ8uzAKpPHdE2zvEscOE"; 
 
 export default function CRMPage() {
+    const router = useRouter();
     const [view, setView] = useState('list');
     const [activeTab, setActiveTab] = useState('INFO');
     
@@ -181,19 +183,15 @@ export default function CRMPage() {
 
     // --- 🚀 HELPER PARA EXTRAER COORDENADAS (REGEX AVANZADO) ---
     const extractCoordinates = (text: string) => {
-        // 1. Patrón Standard URL (@lat,lng) -> Ejs: google.com/maps/...@ -31.42,-64.18
         let match = text.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
         if (match) return { lat: match[1], lng: match[2] };
 
-        // 2. Patrón "search/query" (?q=lat,lng)
         match = text.match(/q=(-?\d+\.\d+),(-?\d+\.\d+)/);
         if (match) return { lat: match[1], lng: match[2] };
 
-        // 3. Patrón "Data Param" (!3dlat!4dlng) -> Común en embeds y URLs largas
         match = text.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
         if (match) return { lat: match[1], lng: match[2] };
 
-        // 4. Patrón Raw (Pegar solo "-31.42, -64.18")
         match = text.match(/^(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)$/);
         if (match) return { lat: match[1], lng: match[2] };
 
@@ -218,7 +216,7 @@ export default function CRMPage() {
             toast.success(`Coordenadas detectadas: ${coords.lat}, ${coords.lng}`);
             setAddressSuggestions([]);
             setShowSuggestions(false);
-            return; // 🛑 Cortamos aquí si detectamos coordenadas, no buscamos en Autocomplete
+            return; 
         }
 
         // 2. FLUJO NORMAL DE BÚSQUEDA POR TEXTO (AUTOCOMPLETE)
@@ -294,7 +292,6 @@ export default function CRMPage() {
         try {
             let updatedObjectives = [...(selectedClient.objetivos || [])];
             
-            // Prioridad a lo manual si se editó, sino lo que trajo Google (Link o Search)
             const finalLat = tempObjective.lat || '';
             const finalLng = tempObjective.lng || '';
             const finalCoords = (finalLat && finalLng) ? `${finalLat},${finalLng}` : (tempObjective.coords || '');
@@ -412,7 +409,13 @@ export default function CRMPage() {
                     {view === 'list' ? (
                         <button onClick={handleCreateNew} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase flex gap-2"><Plus size={16}/> Nuevo</button>
                     ) : (
-                        <button onClick={() => setView('list')} className="text-slate-500 font-bold text-xs uppercase">Volver</button>
+                        
+                        <div className="flex gap-2">
+                            <button onClick={() => router.push(`/admin/cotizador?clientId=${selectedClient?.id}`)} className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-lg text-xs font-bold uppercase flex gap-2 items-center hover:bg-emerald-200 transition-colors">
+                                <Calculator size={14}/> Cotizar
+                            </button>
+                            <button onClick={() => setView('list')} className="text-slate-500 font-bold text-xs uppercase">Volver</button>
+                        </div>
                     )}
                 </header>
 
@@ -707,7 +710,17 @@ export default function CRMPage() {
                                                             {(obj.lat && obj.lng || obj.coords) && <div className="text-[10px] text-indigo-500 mt-1 flex items-center gap-1"><Crosshair size={10}/> GPS Google OK</div>}
                                                         </div>
                                                         <div className="flex gap-2">
-                                                            {(obj.lat && obj.lng || obj.coords) && <a href={`http://googleusercontent.com/maps.google.com/maps?q=${obj.coords || `${obj.lat},${obj.lng}`}`} target="_blank" rel="noopener noreferrer" className="p-2 bg-white border rounded text-indigo-500 hover:bg-indigo-50"><ExternalLink size={14}/></a>}
+                                                            {/* ✅ ENLACE DE MAPAS CORREGIDO A FORMATO STANDARD */}
+                                                            {(obj.lat && obj.lng || obj.coords) && (
+                                                                <a 
+                                                                    href={`https://www.google.com/maps?q=${obj.lat || obj.coords?.split(',')[0]},${obj.lng || obj.coords?.split(',')[1]}`} 
+                                                                    target="_blank" 
+                                                                    rel="noopener noreferrer" 
+                                                                    className="p-2 bg-white border rounded text-indigo-500 hover:bg-indigo-50"
+                                                                >
+                                                                    <ExternalLink size={14}/>
+                                                                </a>
+                                                            )}
                                                             <button onClick={() => { setEditingObjectiveId(obj.id); setTempObjective(obj); }} className="p-2 bg-white border rounded hover:text-indigo-600"><Edit2 size={14}/></button>
                                                             <button onClick={() => deleteObjective(obj.id)} className="p-2 bg-white border rounded hover:text-rose-500"><Trash2 size={14}/></button>
                                                         </div>

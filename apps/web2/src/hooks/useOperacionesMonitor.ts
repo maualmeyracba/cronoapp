@@ -49,6 +49,7 @@ export const useOperacionesMonitor = () => {
     const servicesSLARef = useRef<any[]>([]);
     const processedDataRef = useRef<any[]>([]);
     const objectivesRef = useRef<any[]>([]); 
+    const clientLookupRef = useRef<any[]>([]);
 
     useEffect(() => { const t = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(t); }, []);
     useEffect(() => { const auth = getAuth(); const unsubscribe = auth.onAuthStateChanged(user => { if (user) setOperatorInfo(prev => ({ ...prev, name: formatName(user) })); }); return () => unsubscribe(); }, []);
@@ -62,16 +63,25 @@ export const useOperacionesMonitor = () => {
         });
         const fetchConfig = async () => { try { const snap = await getDocs(query(collection(db, 'config'), limit(1))); if (!snap.empty) setConfig({ ...config, ...snap.docs[0].data() }); } catch (e) {} }; fetchConfig();
         const unsubEmp = onSnapshot(collection(db, 'empleados'), snap => setEmployees(snap.docs.map(d => ({ id: d.id, fullName: `${d.data().lastName||''} ${d.data().firstName||''}`.trim() || d.data().name || 'Sin Nombre', ...d.data() }))));
+        
         const unsubObj = onSnapshot(collection(db, 'clients'), snap => { 
-            const objs: any[] = []; 
-            snap.docs.forEach(d => { const data = d.data(); if (data.objetivos) { data.objetivos.forEach((o: any) => { objs.push({ ...o, clientName: data.name, clientId: d.id }); }); } else { objs.push({ id: d.id, name: data.name, clientName: data.name }); }}); 
-            setObjectives(objs); 
-            objectivesRef.current = objs;
+            const mapObjs: any[] = []; const lookup: any[] = [];
+            snap.docs.forEach(d => { 
+                const data = d.data();
+                lookup.push({ id: d.id, name: data.name, clientName: data.name, isClient: true });
+                if (data.objetivos) { 
+                    data.objetivos.forEach((o: any) => { 
+                        const objData = { ...o, id: o.id, name: o.name, clientName: data.name, clientId: d.id };
+                        mapObjs.push(objData); lookup.push(objData);
+                    }); 
+                } 
+            }); 
+            setObjectives(mapObjs); objectivesRef.current = mapObjs; clientLookupRef.current = lookup;
         });
+
         const unsubSLA = onSnapshot(query(collection(db, 'servicios_sla'), where('status', '==', 'active')), snap => {
             const services = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            setServicesSLA(services);
-            servicesSLARef.current = services; 
+            setServicesSLA(services); servicesSLARef.current = services; 
         });
         return () => { unsubLogs(); unsubEmp(); unsubObj(); unsubSLA(); };
     }, []);
@@ -89,21 +99,22 @@ export const useOperacionesMonitor = () => {
         });
     }, []);
 
-    // PROCESAMIENTO
     const processedData = useMemo(() => {
         const mappedShifts = rawShifts.map(shift => {
             if (!shift.shiftDateObj) return null;
             
-            // ESTADOS BASE
+            const statusUpper = (shift.status || '').toUpperCase();
+            const typeUpper = (shift.type || '').toUpperCase();
+            const notesUpper = (shift.notes || '').toUpperCase();
+            if (statusUpper === 'FRANCO' || statusUpper === 'OFF' || typeUpper === 'FRANCO' || notesUpper.includes('FRANCO')) return null;
+
             const isReported = shift.status === 'UNCOVERED_REPORTED' || shift.reportedToPlanning === true; 
             const isCompleted = shift.status === 'COMPLETED' || !!shift.isCompleted;
             const isPresent = shift.status === 'PRESENT' || shift.status === 'CHECK_IN' || !!shift.isPresent;
             const isRetention = !!shift.isRetention;
-            const isUnassigned = !shift.employeeId || shift.employeeId === 'VACANTE';
+            const isUnassigned = !shift.employeeId || shift.employeeId === '' || shift.employeeId === 'VACANTE';
             
-            // LOGICA TEMPORAL (Reloj)
             const diffMinutes = (now.getTime() - shift.shiftDateObj.getTime()) / 60000;
-            // Es tarde si: No está presente, no terminó, y ya pasó la hora de inicio + tolerancia
             const isLate = !isPresent && !isCompleted && diffMinutes > config.toleranceLate;
             const isCriticallyLate = !isPresent && !isCompleted && diffMinutes > config.toleranceAbsent;
             const isAbsent = shift.status === 'ABSENT' || !!shift.isAbsent;
@@ -116,9 +127,14 @@ export const useOperacionesMonitor = () => {
             else if (isCompleted) statusText = 'FINALIZADO';
             else if (isLate) statusText = 'LLEGADA TARDE';
 
-            const objective = objectives.find(o => o.id === shift.objectiveId || o.name === shift.objectiveName);
-            
-            // RECUPERACIÓN DE NOMBRE DE PUESTO (V7.55)
+            let finalClientName = shift.clientName;
+            let finalObjectiveName = shift.objectiveName;
+            if (!finalClientName || !finalObjectiveName || finalObjectiveName === 'Objetivo') {
+                const found = clientLookupRef.current.find(o => o.id === shift.objectiveId || (o.isClient && o.id === shift.clientId));
+                if (found) { finalClientName = found.clientName; if (!found.isClient) finalObjectiveName = found.name; }
+            }
+            if (!finalClientName) finalClientName = 'Cliente...'; if (!finalObjectiveName) finalObjectiveName = 'Objetivo...';
+
             let finalPositionName = shift.positionName || shift.position || 'Puesto General';
             const service = servicesSLA.find(s => s.objectiveId === shift.objectiveId);
             if (service && service.positions) {
@@ -127,25 +143,13 @@ export const useOperacionesMonitor = () => {
                 else if (service.positions.length === 1 && service.positions[0].name) finalPositionName = service.positions[0].name;
             }
 
-            // RECUPERACIÓN DE NOMBRE DE EMPLEADO (V7.55)
-            // Prioridad: 1. Nombre en turno, 2. Búsqueda por ID en empleados, 3. 'VACANTE' o 'Sin Nombre'
             let finalEmployeeName = shift.employeeName;
-            if (!finalEmployeeName && shift.employeeId && shift.employeeId !== 'VACANTE') {
-                 const emp = employees.find(e => e.id === shift.employeeId);
-                 if (emp) finalEmployeeName = emp.fullName;
-            }
-            if (isUnassigned) finalEmployeeName = 'VACANTE';
-            if (!finalEmployeeName) finalEmployeeName = 'Sin Asignar';
+            if (isUnassigned) finalEmployeeName = 'PUESTO VACANTE';
+            else if (!finalEmployeeName && shift.employeeId) { const emp = employees.find(e => e.id === shift.employeeId); if (emp) finalEmployeeName = emp.fullName; }
 
             return {
-                ...shift, 
-                clientName: objective?.clientName || shift.clientName,
-                objectiveName: objective?.name || shift.objectiveName,
-                positionName: finalPositionName,
-                employeeName: finalEmployeeName,
-                isUnassigned, isRetention, isReported, isPresent, isCompleted, statusText,
-                isLate, isCriticallyLate, isAbsent,
-                // Flag para identificar problemas operativos
+                ...shift, clientName: finalClientName, objectiveName: finalObjectiveName, positionName: finalPositionName, employeeName: finalEmployeeName,
+                isUnassigned, isRetention, isReported, isPresent, isCompleted, statusText, isLate, isCriticallyLate, isAbsent,
                 hasPendingIssue: (!isCompleted && !isReported && (isRetention || isUnassigned || isLate))
             };
         }).filter(Boolean);
@@ -155,7 +159,7 @@ export const useOperacionesMonitor = () => {
         servicesSLA.forEach(service => {
             const objectiveId = service.objectiveId;
             const positions = service.positions || [];
-            const objInfo = objectives.find(o => o.id === objectiveId) || { name: service.objectiveName || 'Objetivo', clientName: service.clientName || 'Cliente' };
+            const objInfo = clientLookupRef.current.find(o => o.id === objectiveId) || { name: service.objectiveName || 'Objetivo', clientName: service.clientName || 'Cliente' };
             const shiftsForObjective = mappedShifts.filter(s => (s.objectiveId === objectiveId) && s.shiftDateObj?.toDateString() === todayStr);
             
             positions.forEach((pos: any) => {
@@ -164,7 +168,6 @@ export const useOperacionesMonitor = () => {
                 const posNameUpper = (pos.name || '').toUpperCase();
                 const shiftsForPos = shiftsForObjective.filter(s => s.positionId === pos.id || (s.positionName || '').toUpperCase() === posNameUpper);
                 let realPositionName = pos.name || 'Guardia';
-
                 const auditSlots = [];
                 if (is24Hs) { auditSlots.push({ code: 'M', start: 5, end: 12, label: 'TURNO MAÑANA' }); auditSlots.push({ code: 'T', start: 13, end: 20, label: 'TURNO TARDE' }); auditSlots.push({ code: 'N', start: 21, end: 29, label: 'TURNO NOCHE' }); } 
                 else { auditSlots.push({ code: 'G', start: 0, end: 24, label: 'TURNO GENERAL' }); }
@@ -188,9 +191,7 @@ export const useOperacionesMonitor = () => {
                 });
             });
         });
-        const result = [...mappedShifts, ...slaGaps].sort((a:any, b:any) => a.shiftDateObj - b.shiftDateObj);
-        processedDataRef.current = result;
-        return result;
+        return [...mappedShifts, ...slaGaps].sort((a:any, b:any) => a.shiftDateObj - b.shiftDateObj);
     }, [rawShifts, now, employees, objectives, servicesSLA, config]);
 
     const stats = useMemo(() => ({
@@ -208,16 +209,9 @@ export const useOperacionesMonitor = () => {
         if (filterText) { const lower = filterText.toLowerCase(); list = list.filter((s: any) => (s.employeeName||'').toLowerCase().includes(lower) || (s.clientName||'').toLowerCase().includes(lower)); }
         
         switch (viewTab) {
-            case 'PRIORIDAD': 
-                // V7.55: Todo lo que esté "mal" ahora. Tarde, Vacante, Retenido.
-                return list.filter((s:any) => (s.hasPendingIssue || s.isSlaGap) && !s.isReported && !s.isPresent);
-            
+            case 'PRIORIDAD': return list.filter((s:any) => (s.hasPendingIssue || s.isSlaGap) && !s.isReported && !s.isPresent);
             case 'RETENIDOS': return list.filter((s:any) => s.isRetention);
-            
-            case 'AUN_NO': 
-                // V7.55: SOLO FUTURO. Si ya pasó la hora, se va a Prioridad.
-                return list.filter((s:any) => s.shiftDateObj > now && !s.isPresent && !s.isCompleted && !s.isRetention && !s.isSlaGap && !s.isReported);
-                
+            case 'AUN_NO': return list.filter((s:any) => !s.isPresent && !s.isCompleted && !s.isRetention && !s.isSlaGap && !s.isReported);
             case 'ACTIVOS': return list.filter((s:any) => s.isPresent && !s.isCompleted && !s.isRetention);
             case 'AUSENTES': return list.filter((s:any) => s.isAbsent);
             case 'PLANIFICADO': return list.filter((s:any) => s.shiftDateObj > now && !s.isUnassigned && !s.isCompleted && !s.isAbsent && !s.isSlaGap && !s.isReported);
@@ -227,39 +221,64 @@ export const useOperacionesMonitor = () => {
     }, [processedData, viewTab, filterText, now]);
 
     const handleAction = async (action: string, shiftId: string, payload?: any) => {
-        if (action === 'NOTIFY_GAP') {
-            setProcessingId(shiftId); setNovedadData({ tipo: 'Falta de Cobertura (Notificar)', nota: 'Reportado desde panel de resolución' });
-            confirmNovedad(shiftId, 'Falta de Cobertura (Notificar)'); return;
-        }
-        if (shiftId.startsWith('SLA_GAP_')) { toast.error("Para un faltante de SLA, use 'RESOLVER' o 'NOTIFICAR'."); return; }
-        const shift = rawShifts.find(s => s.id === shiftId);
-        if (!shift) return;
-        setProcessingId(shiftId);
-        const auth = getAuth(); const user = auth.currentUser; const actorName = formatName(user);
-
+        if (action === 'INSPECT') { try { if (shiftId.startsWith('SLA_GAP_')) { alert("GAP Virtual"); return; } const docSnap = await getDoc(doc(db, 'turnos', shiftId)); if(docSnap.exists()) alert(JSON.stringify(docSnap.data(),null,2)); } catch(e){alert(e)} return;}
+        if (action === 'NOTIFY_GAP') { setProcessingId(shiftId); setNovedadData({ tipo: 'Falta de Cobertura (Notificar)', nota: 'Reportado desde panel' }); confirmNovedad(shiftId, 'Falta de Cobertura (Notificar)'); return; }
+        if (shiftId.startsWith('SLA_GAP_')) { toast.error("Use RESOLVER"); return; }
+        const shift = rawShifts.find(s => s.id === shiftId); if (!shift) return;
+        setProcessingId(shiftId); const auth = getAuth(); const actorName = formatName(auth.currentUser);
         try {
             if (action === 'CHECKIN') {
-                // --- V7.55: INGRESO DIRECTO SIN PREGUNTAS ---
-                // Se registra la hora real. El cálculo de retención es post-proceso de RRHH.
                 await updateDoc(doc(db, 'turnos', shiftId), { status: 'PRESENT', isPresent: true, realStartTime: serverTimestamp(), checkInMethod: 'MANUAL_DASHBOARD' });
-                await addDoc(collection(db, 'audit_logs'), { action: 'MANUAL_CHECKIN', targetShiftId: shiftId, actorName: actorName, timestamp: serverTimestamp(), details: 'Ingreso manual' });
+                await addDoc(collection(db, 'audit_logs'), { action: 'MANUAL_CHECKIN', targetShiftId: shiftId, actorName, timestamp: serverTimestamp(), details: 'Ingreso manual' });
                 toast.success("Ingreso registrado");
             } else if (action === 'CHECKOUT') {
-                await updateDoc(doc(db, 'turnos', shiftId), { status: 'COMPLETED', isCompleted: true, isPresent: false, realEndTime: serverTimestamp(), checkoutNote: payload || null });
-                await addDoc(collection(db, 'audit_logs'), { action: 'MANUAL_CHECKOUT', targetShiftId: shiftId, actorName: actorName, timestamp: serverTimestamp(), details: payload ? `Salida: ${payload}` : 'Salida normal' });
+                await updateDoc(doc(db, 'turnos', shiftId), { status: 'COMPLETED', isCompleted: true, isPresent: false, realEndTime: serverTimestamp(), checkoutNote: payload||null });
+                await addDoc(collection(db, 'audit_logs'), { action: 'MANUAL_CHECKOUT', targetShiftId: shiftId, actorName, timestamp: serverTimestamp(), details: payload ? `Salida: ${payload}` : 'Salida normal' });
                 toast.success("Salida registrada");
-            } else if (action === 'NOVEDAD') {
-                setModals(m => ({ ...m, novedad: true }));
-            }
-        } catch (e) { toast.error("Error en acción"); }
-        setProcessingId(null);
+            } else if (action === 'NOVEDAD') setModals(m => ({ ...m, novedad: true }));
+        } catch (e) { toast.error("Error acción"); } setProcessingId(null);
+    };
+
+    // --- V7.58: FUNCIONES DE GESTIÓN OPERATIVA ---
+    const assignReemplazo = async (shiftId: string, employeeId: string, employeeName: string) => {
+        if (shiftId.startsWith('SLA_GAP_')) {
+            // Si es un gap virtual, primero lo creamos y luego lo asignamos
+            toast.error("Primero use 'Notificar' para materializar la vacante, luego asigne.");
+            // (Mejoraríamos esto para hacerlo en un paso, pero por seguridad primero materializar)
+            return;
+        }
+        try {
+            const auth = getAuth(); const actorName = formatName(auth.currentUser);
+            await updateDoc(doc(db, 'turnos', shiftId), { 
+                employeeId, employeeName, 
+                status: 'SCHEDULED', // Vuelve a estar programado
+                isUnassigned: false,
+                isReported: false, // Ya se resolvió
+                comments: `Reemplazo asignado: ${employeeName}`
+            });
+            await addDoc(collection(db, 'audit_logs'), { action: 'REPLACEMENT_ASSIGNED', targetShiftId: shiftId, actorName, timestamp: serverTimestamp(), details: `Asignó a ${employeeName}` });
+            toast.success(`Reemplazo asignado: ${employeeName}`);
+        } catch (e: any) { toast.error("Error asignando: " + e.message); }
+    };
+
+    const markAbsent = async (shiftId: string) => {
+        if (shiftId.startsWith('SLA_GAP_')) return;
+        try {
+            const auth = getAuth(); const actorName = formatName(auth.currentUser);
+            await updateDoc(doc(db, 'turnos', shiftId), { 
+                status: 'ABSENT', 
+                isAbsent: true,
+                isReported: true, // Se considera reportado
+                comments: 'Ausencia confirmada desde Monitor'
+            });
+            await addDoc(collection(db, 'audit_logs'), { action: 'ABSENCE_CONFIRMED', targetShiftId: shiftId, actorName, timestamp: serverTimestamp(), details: 'Confirmó ausencia' });
+            toast.success("Ausencia confirmada");
+        } catch (e: any) { toast.error("Error confirmando ausencia: " + e.message); }
     };
 
     const confirmNovedad = async (forceId?: string, forceType?: string) => {
-        const targetId = forceId || processingId;
-        const targetType = forceType || novedadData.tipo;
-        if (!targetId) return;
-        const auth = getAuth(); const user = auth.currentUser; const actorName = formatName(user);
+        const targetId = forceId || processingId; const targetType = forceType || novedadData.tipo; if (!targetId) return;
+        const auth = getAuth(); const actorName = formatName(auth.currentUser);
         try {
             const isGap = targetId.startsWith('SLA_GAP_');
             if (targetType.includes('Notificar')) {
@@ -268,43 +287,24 @@ export const useOperacionesMonitor = () => {
                     const parts = targetId.split('_');
                     if (parts.length >= 4) {
                         const serviceId = parts[2]; const posId = parts[3];
-                        if (parts.length >= 5) {
-                            const slotCode = parts[4]; const derivedDate = new Date(); 
-                            if (slotCode === 'M') { derivedDate.setHours(7,0,0,0); shiftType = 'Mañana'; } else if (slotCode === 'T') { derivedDate.setHours(15,0,0,0); shiftType = 'Tarde'; } else if (slotCode === 'N') { derivedDate.setHours(23,0,0,0); shiftType = 'Noche'; }
-                            startTime = derivedDate;
-                        }
+                        if (parts.length >= 5) { const slotCode = parts[4]; const d = new Date(); if(slotCode==='M') d.setHours(7,0,0,0); else if(slotCode==='T') d.setHours(15,0,0,0); else if(slotCode==='N') d.setHours(23,0,0,0); startTime = d; }
                         const service = servicesSLARef.current.find(s => s.id === serviceId);
-                        if (service) { objectiveId = service.objectiveId; clientId = service.clientId; clientName = service.clientName || 'Cliente'; objectiveName = service.objectiveName || 'Objetivo'; 
-                            let pos = service.positions?.find((p:any) => String(p.id) === String(posId)); if (!pos && service.positions?.length > 0) pos = service.positions[0]; if (pos && pos.name) targetPositionName = pos.name;
-                        }
+                        if (service) { objectiveId = service.objectiveId; clientId = service.clientId; clientName = service.clientName||'C'; objectiveName = service.objectiveName||'O'; let pos=service.positions?.find((p:any)=>String(p.id)===String(posId)); if(!pos && service.positions?.length>0) pos=service.positions[0]; if(pos && pos.name) targetPositionName=pos.name; }
                     }
-                    if (!objectiveId) { const gapData = processedDataRef.current.find(s => s.id === targetId); if (gapData) { objectiveId = gapData.objectiveId; clientId = gapData.clientId; targetPositionName = gapData.positionName || 'Guardia'; if (gapData.shiftDateObj) startTime = gapData.shiftDateObj; clientName = gapData.clientName; objectiveName = gapData.objectiveName; } }
-                    if (objectiveId && objectiveName === 'Objetivo') { const obj = objectivesRef.current.find(o => o.id === objectiveId); if (obj) { objectiveName = obj.name; clientName = obj.clientName; } }
-                    if (!objectiveId) throw new Error("No se pudo identificar el objetivo.");
-
-                    const payload = {
-                        objectiveId, clientId, clientName, objectiveName, positionName: targetPositionName, type: shiftType,
-                        startTime: Timestamp.fromDate(startTime || new Date()), endTime: Timestamp.fromDate(new Date((startTime || new Date()).getTime() + 8*3600000)),
-                        status: 'UNCOVERED_REPORTED', isReported: true, reportedToPlanning: true, employeeName: 'VACANTE (A ASIGNAR)', employeeId: 'VACANTE',
-                        client: { id: clientId, name: clientName, razonsocial: clientName }, objective: { id: objectiveId, name: objectiveName }, metadata: { alertTitle: `Vacante: ${targetPositionName}` },
-                        createdAt: serverTimestamp(), generatedFromSlaGap: true
-                    };
-                    Object.keys(payload).forEach(key => (payload as any)[key] === undefined && delete (payload as any)[key]);
+                    if (!objectiveId) { const g = processedDataRef.current.find(s=>s.id===targetId); if(g){ objectiveId=g.objectiveId; clientId=g.clientId; targetPositionName=g.positionName||'Guardia'; if(g.shiftDateObj) startTime=g.shiftDateObj; clientName=g.clientName; objectiveName=g.objectiveName; } }
+                    if (objectiveId) { const o = clientLookupRef.current.find(obj=>obj.id===objectiveId); if(o){ objectiveName=o.name; clientName=o.clientName; } }
+                    
+                    const payload = { objectiveId, clientId, clientName, objectiveName, positionName: targetPositionName, type: shiftType, startTime: Timestamp.fromDate(startTime), endTime: Timestamp.fromDate(new Date(startTime.getTime()+8*3600000)), status: 'UNCOVERED_REPORTED', isReported: true, reportedToPlanning: true, employeeName: 'VACANTE (A ASIGNAR)', employeeId: 'VACANTE', client: {id:clientId, name:clientName}, objective: {id:objectiveId, name:objectiveName}, createdAt: serverTimestamp(), generatedFromSlaGap: true };
+                    Object.keys(payload).forEach(k=>(payload as any)[k]===undefined && delete (payload as any)[k]);
                     await addDoc(collection(db, 'turnos'), payload);
-                } else {
-                    await updateDoc(doc(db, 'turnos', targetId), { status: 'UNCOVERED_REPORTED', isReported: true, reportedToPlanning: true, comments: `No se planificó turno en puesto ${targetPositionName}`, reportedAt: serverTimestamp() });
-                }
-                await addDoc(collection(db, 'audit_logs'), { action: 'SLA_REPORT', targetShiftId: targetId, actorName: actorName, timestamp: serverTimestamp(), details: `Notificó falta en ${targetPositionName}` });
-                toast.success("Notificado a planificación.");
+                } else { await updateDoc(doc(db, 'turnos', targetId), { status: 'UNCOVERED_REPORTED', isReported: true, reportedToPlanning: true, comments: `Falta en ${targetPositionName}`, reportedAt: serverTimestamp() }); }
+                await addDoc(collection(db, 'audit_logs'), { action: 'SLA_REPORT', targetShiftId: targetId, actorName, timestamp: serverTimestamp(), details: `Notificó falta en ${targetPositionName}` }); toast.success("Notificado");
             } else {
                 await addDoc(collection(db, 'novedades'), { shiftId: targetId, type: targetType, notes: novedadData.nota, createdAt: serverTimestamp(), viewed: false });
-                await updateDoc(doc(db, 'turnos', targetId), { hasNovedad: true });
-                toast.success("Novedad reportada");
-            }
-            setModals(m => ({...m, novedad: false}));
-        } catch (e: any) { console.error("Error técnico:", e); toast.error("No se pudo notificar: " + e.message); }
-        setProcessingId(null);
+                await updateDoc(doc(db, 'turnos', targetId), { hasNovedad: true }); toast.success("Novedad reportada");
+            } setModals(m=>({...m, novedad:false}));
+        } catch(e:any) { console.error(e); toast.error("Error"); } setProcessingId(null);
     };
 
-    return { now, processedData, listData, stats, recentLogs, objectives, servicesSLA, operatorInfo, formatName, viewTab, setViewTab, filterText, setFilterText, isCompact, setIsCompact, modals, setModals, handleAction, processingId, confirmNovedad, novedadData, setNovedadData };
+    return { now, processedData, listData, stats, recentLogs, objectives, servicesSLA, operatorInfo, employees, formatName, viewTab, setViewTab, filterText, setFilterText, isCompact, setIsCompact, modals, setModals, handleAction, processingId, confirmNovedad, novedadData, setNovedadData, assignReemplazo, markAbsent };
 };
