@@ -1,80 +1,62 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import dynamic from 'next/dynamic';
-import { Toaster } from 'sonner';
 import { useOperacionesMonitor } from '@/hooks/useOperacionesMonitor';
 import { POPUP_STYLES } from '@/components/operaciones/mapStyles';
-import AbsenceResolutionModal from '@/components/operaciones/AbsenceResolutionModal';
-import RetentionModal from '@/components/operaciones/RetentionModal';
-import { X, FileCheck, Loader2 } from 'lucide-react';
+import { Layers, AlertTriangle, UserCheck, Clock, Siren, Shield, Calendar } from 'lucide-react';
 
-// Cargamos el mapa sin SSR
-const OperacionesMap = dynamic(() => import('@/components/operaciones/OperacionesMap'), { 
-    loading: () => <div className="h-screen w-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="animate-spin mr-2"/> Cargando Mapa Táctico...</div>, 
-    ssr: false 
-});
+const OperacionesMap = dynamic(() => import('@/components/operaciones/OperacionesMap'), { loading: () => <div className="h-screen flex items-center justify-center text-slate-400 bg-slate-900">Cargando Mapa Táctico...</div>, ssr: false });
 
-// Modal Simple para esta vista (reducido para no duplicar código complejo si no es necesario)
-const CheckOutModal = ({ isOpen, onClose, onConfirm, employeeName }: any) => {
-    const [novedad, setNovedad] = useState('');
-    if (!isOpen) return null;
-    return (
-        <div className="fixed inset-0 z-[9000] bg-black/60 flex items-center justify-center p-4 animate-in fade-in">
-            <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl p-6">
-                <h3 className="font-bold mb-4">Salida: {employeeName}</h3>
-                <button onClick={() => { onConfirm(false); onClose(); }} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold mb-2">Salida Normal</button>
-                <textarea className="w-full p-2 border rounded mb-2" placeholder="Novedad..." value={novedad} onChange={e=>setNovedad(e.target.value)}/>
-                <button onClick={() => { onConfirm(novedad); setNovedad(''); onClose(); }} className="w-full py-2 bg-slate-100 font-bold rounded">Reportar Novedad</button>
-                <button onClick={onClose} className="mt-2 text-sm text-slate-400 w-full">Cancelar</button>
-            </div>
-        </div>
-    );
-};
-
-export default function MapViewPage() {
+export default function TacticalMapView() {
     const logic = useOperacionesMonitor();
-    const [wizardData, setWizardData] = useState<{isOpen: boolean, shift: any}>({isOpen: false, shift: null});
-    const [retentionModal, setRetentionModal] = useState<{isOpen: boolean, shift: any}>({isOpen: false, shift: null});
-    const [checkoutData, setCheckoutData] = useState<{isOpen: boolean, shift: any}>({isOpen: false, shift: null});
-
-    const openResolution = (shift: any) => { 
-        if (shift.isRetention) setRetentionModal({ isOpen: true, shift }); 
-        else setWizardData({ isOpen: true, shift }); 
-    };
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => { setMounted(true); }, []);
 
     return (
-        <div className="h-screen w-screen overflow-hidden bg-slate-900 flex flex-col">
-            <Head><title>Mapa Táctico - COSP</title></Head>
+        <div className="h-screen w-screen flex flex-col bg-slate-900 text-white overflow-hidden">
+            <Head><title>COSP TACTICAL MAP</title></Head>
             <style>{POPUP_STYLES}</style>
-            <Toaster position="top-right" />
             
-            {/* Barra Superior Flotante */}
-            <div className="absolute top-4 left-4 z-[1000] bg-white/90 backdrop-blur px-4 py-2 rounded-xl shadow-lg border border-slate-200 flex items-center gap-4">
-                <h1 className="font-black text-slate-800 text-sm">VISTA TÁCTICA EXTENDIDA</h1>
-                <div className="h-4 w-px bg-slate-300"></div>
-                <div className="flex gap-4 text-xs font-bold">
-                    <span className="text-rose-600">PRIORIDAD: {logic.stats.prioridad}</span>
-                    <span className="text-emerald-600">ACTIVOS: {logic.stats.activos}</span>
-                </div>
-            </div>
-
             <div className="flex-1 relative">
                 <OperacionesMap 
                     center={[-31.4201, -64.1888]} 
-                    objectives={logic.objectives} 
-                    processedData={logic.processedData} 
+                    objectives={logic.filteredObjectives} // 🛑 USAR FILTRADOS
+                    processedData={logic.listData} 
                     onAction={logic.handleAction} 
                     setMapInstance={() => {}} 
-                    onOpenResolution={openResolution} 
-                    onOpenCheckout={(shift:any) => setCheckoutData({isOpen:true, shift})} 
+                    currentFilter={logic.viewTab}
                 />
             </div>
 
-            {/* Modales necesarios para operar desde el mapa */}
-            <AbsenceResolutionModal isOpen={wizardData.isOpen} onClose={() => setWizardData({isOpen:false, shift: null})} absenceShift={wizardData.shift} onResolve={() => setWizardData({isOpen:false, shift:null})} />
-            <RetentionModal isOpen={retentionModal.isOpen} onClose={() => setRetentionModal({isOpen:false, shift: null})} retainedShift={retentionModal.shift} onResolve={() => setRetentionModal({isOpen:false, shift:null})} />
-            <CheckOutModal isOpen={checkoutData.isOpen} onClose={() => setCheckoutData({isOpen:false, shift:null})} onConfirm={(nov:string|null) => logic.handleAction('CHECKOUT', checkoutData.shift.id, nov)} employeeName={checkoutData.shift?.employeeName} />
+            <div className="h-16 bg-slate-800 border-t border-slate-700 flex items-center justify-between px-6 shadow-2xl z-[2000]">
+                <div className="flex items-center gap-4">
+                    <h1 className="font-black text-xl tracking-tighter text-indigo-400">COSP TACTICAL</h1>
+                    <div className="h-8 w-px bg-slate-600"></div>
+                    
+                    {/* 🛑 NUEVO: SELECTOR DE CLIENTE */}
+                    <select 
+                        value={logic.selectedClientId} 
+                        onChange={(e) => logic.setSelectedClientId(e.target.value)}
+                        className="bg-slate-700 text-white text-xs font-bold p-2 rounded-lg border border-slate-600 outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                        <option value="">TODOS LOS CLIENTES</option>
+                        {logic.uniqueClients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+
+                    <div className="h-8 w-px bg-slate-600"></div>
+                    <div className="text-xs font-mono text-slate-400">
+                        {mounted ? logic.now.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--'}
+                    </div>
+                </div>
+
+                <div className="flex gap-2">
+                    <button onClick={() => logic.setViewTab('TODOS')} className={`px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 transition-all ${logic.viewTab === 'TODOS' ? 'bg-slate-100 text-slate-900' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}><Layers size={14}/> TODOS ({logic.stats.total})</button>
+                    <button onClick={() => logic.setViewTab('PRIORIDAD')} className={`px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 transition-all ${logic.viewTab === 'PRIORIDAD' ? 'bg-rose-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}><AlertTriangle size={14}/> ({logic.stats.prioridad})</button>
+                    <button onClick={() => logic.setViewTab('RETENIDOS')} className={`px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 transition-all ${logic.viewTab === 'RETENIDOS' ? 'bg-orange-500 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}><Clock size={14}/> ({logic.stats.retenidos})</button>
+                    <button onClick={() => logic.setViewTab('ACTIVOS')} className={`px-4 py-2 rounded-lg font-bold text-xs uppercase flex items-center gap-2 transition-all ${logic.viewTab === 'ACTIVOS' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}><UserCheck size={14}/> ({logic.stats.activos})</button>
+                </div>
+            </div>
         </div>
     );
 }

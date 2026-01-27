@@ -1,93 +1,153 @@
 
-import React, { useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
-import 'leaflet/dist/leaflet.css';
+import React, { useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { Building2, Clock, Siren, CheckCircle, LogOut, AlertTriangle, AlertOctagon, Shield, FileText } from 'lucide-react';
+import 'leaflet/dist/leaflet.css';
+import { Building2, AlertTriangle, Clock, Siren, CheckCircle } from 'lucide-react';
 
-const iconUrl = (color: string) => `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`;
-const shadowUrl = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png';
+// --- GENERADOR DE ICONOS DINÁMICOS ---
+const createCustomIcon = (status: 'OK' | 'WARNING' | 'CRITICAL' | 'RETENTION' | 'ACTIVE', countPresent: number, countTotal: number) => {
+    let color = '#64748b'; // Slate (Default / Vacío / Gris)
+    let shadowColor = 'rgba(0,0,0,0.2)';
+    let iconHtml = '';
+    let pulseClass = '';
+    let showRing = false;
 
-const getIcon = (status: string) => {
-    let color = 'grey'; 
-    if (status === 'PRIORIDAD') color = 'red';
-    else if (status === 'RETENIDO') color = 'orange';
-    else if (status === 'ACTIVO') color = 'green';
-    else if (status === 'PENDIENTE') color = 'blue';
-    return new L.Icon({ iconUrl: iconUrl(color), shadowUrl: shadowUrl, iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] });
-};
+    if (status === 'ACTIVE') { 
+        color = '#10b981'; // Verde
+        shadowColor = 'rgba(16, 185, 129, 0.4)'; 
+        showRing = true; 
+    } 
+    if (status === 'WARNING') { 
+        color = '#f59e0b'; // Amarillo
+        shadowColor = 'rgba(245, 158, 11, 0.4)'; 
+        showRing = true;
+    } 
+    if (status === 'CRITICAL') { 
+        color = '#ef4444'; // Rojo
+        shadowColor = 'rgba(239, 68, 68, 0.4)'; 
+        pulseClass = 'animate-pulse'; 
+        showRing = true;
+        iconHtml = `<div style="position: absolute; top: -5px; right: -5px; background: ${color}; color: white; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; border: 2px solid white;">!</div>`; 
+    } 
+    if (status === 'RETENTION') { 
+        color = '#f97316'; // Naranja
+        shadowColor = 'rgba(249, 115, 22, 0.5)'; 
+        pulseClass = 'animate-pulse'; 
+        showRing = true;
+        iconHtml = `<div style="position: absolute; top: -5px; right: -5px; background: ${color}; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; border: 2px solid white;">R</div>`; 
+    }
 
-const MapShiftCard = ({ shift, onAction, onOpenResolution, onOpenCheckout }: any) => {
-    const { isRetention, hasPendingIssue, isPresent, isCompleted, employeeName, statusText, isUnassigned, isCriticallyLate, isSlaGap, isReported } = shift;
-    let borderClass = 'border-slate-200'; let bgClass = 'bg-white';
-    
-    if (isSlaGap) { borderClass = 'border-red-600'; bgClass = 'bg-red-50'; }
-    else if (isReported) { borderClass = 'border-violet-400'; bgClass = 'bg-violet-50'; }
-    else if (isUnassigned) { borderClass = 'border-red-500'; bgClass = 'bg-red-50'; }
-    else if (isRetention) { borderClass = 'border-orange-500'; bgClass = 'bg-orange-50'; }
-    else if (isCriticallyLate) { borderClass = 'border-rose-600'; bgClass = 'bg-rose-50'; }
-    else if (hasPendingIssue) { borderClass = 'border-rose-400'; bgClass = 'bg-rose-50'; }
-    else if (isPresent) { borderClass = 'border-emerald-500'; bgClass = 'bg-emerald-50'; }
+    const badgeHtml = countTotal > 0 
+        ? `<div style="position: absolute; bottom: -8px; left: 50%; transform: translateX(-50%); background: white; color: #1e293b; border-radius: 10px; padding: 2px 6px; font-size: 10px; font-weight: 800; border: 1px solid #cbd5e1; box-shadow: 0 2px 4px rgba(0,0,0,0.1); white-space: nowrap;">${countPresent}/${countTotal}</div>` 
+        : '';
 
-    return (
-        <div className={`mb-2 p-2 rounded border-l-4 shadow-sm ${borderClass} ${bgClass}`}>
-            <div className="flex justify-between items-center mb-1">
-                <span className="font-bold text-[11px] truncate max-w-[120px] block" title={employeeName}>{isUnassigned ? (isSlaGap ? 'VACANTE CONTRATO' : 'VACANTE') : employeeName}</span>
-                {isRetention && <span className="bg-orange-600 text-white px-1 rounded text-[9px] font-bold animate-pulse">RET</span>}
-                {!isRetention && <span className="text-[9px] font-bold uppercase text-slate-500">{statusText}</span>}
+    const ringHtml = showRing 
+        ? `<div style="position: absolute; width: 100%; height: 100%; background-color: ${color}; opacity: 0.2; border-radius: 50%; animation: pulse-ring 2s infinite;"></div>`
+        : '';
+
+    const html = `
+        <div style="position: relative; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
+            ${ringHtml}
+            <div class="${pulseClass}" style="width: 32px; height: 32px; background-color: ${color}; border-radius: 50%; border: 3px solid white; box-shadow: 0 4px 6px ${shadowColor}; display: flex; align-items: center; justify-content: center; color: white;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    ${status === 'ACTIVE' ? '<path d="M20 6L9 17l-5-5"/>' : '<path d="M3 21h18M5 21V7l8-4 8 4v14"/>'}
+                </svg>
             </div>
-            <div className="text-[10px] text-slate-500 font-medium mb-1 flex items-center gap-1"><Shield size={10} className="text-slate-400"/> {shift.positionName || 'Puesto General'}</div>
-            <div className="flex justify-between text-slate-500 text-[10px] mb-2 font-mono"><span>{new Date(shift.shiftDateObj).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span><span>➜</span><span>{new Date(shift.endDateObj).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></div>
-            <div className="flex gap-1">
-                {isReported ? (<div className="w-full text-center text-[9px] font-bold text-violet-600 py-1 bg-violet-100 rounded flex items-center justify-center gap-1"><FileText size={10}/> EN PLANIFICACIÓN</div>) : 
-                (hasPendingIssue || isUnassigned || isSlaGap) && !isPresent ? (<button onClick={() => onOpenResolution(shift)} className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-1.5 rounded text-[9px] font-bold uppercase flex items-center justify-center gap-1 shadow-sm animate-pulse"><Siren size={10}/> Resolver</button>) : 
-                (<>{!isPresent ? (<button onClick={() => onAction('CHECKIN', shift.id)} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 rounded text-[9px] font-bold uppercase flex items-center justify-center gap-1 shadow-sm"><CheckCircle size={10}/> Entrar</button>) : (<button onClick={() => onOpenCheckout(shift)} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-1.5 rounded text-[9px] font-bold uppercase flex items-center justify-center gap-1 shadow-sm"><LogOut size={10}/> Salir</button>)}<button onClick={() => onAction('NOVEDAD', shift.id)} className="px-2 bg-white border border-slate-300 hover:bg-amber-50 hover:text-amber-600 text-slate-500 rounded flex items-center justify-center transition-colors"><AlertTriangle size={10}/></button></>)}
-            </div>
+            ${iconHtml}
+            ${badgeHtml}
         </div>
-    );
+    `;
+
+    return L.divIcon({ html, className: 'custom-map-icon', iconSize: [44, 44], iconAnchor: [22, 44], popupAnchor: [0, -40] });
 };
 
-const MapUpdater = ({ center }: { center: [number, number] }) => { const map = useMap(); useEffect(() => { map.setView(center, map.getZoom()); }, [center, map]); return null; };
+const RecenterMap = ({ center }: { center: [number, number] }) => { const map = useMap(); useEffect(() => { map.setView(center, map.getZoom()); }, [center]); return null; };
 
-export default function OperacionesMap({ center, objectives, processedData, onAction, onOpenResolution, onOpenCheckout }: any) {
-    const mapMarkers = useMemo(() => {
-        if (!objectives || !processedData) return [];
-        const now = new Date(); const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999);
-        return objectives.map((obj: any) => {
-            const shifts = processedData.filter((s: any) => {
-                const isMatch = s.objectiveId === obj.id || s.objectiveName === obj.name;
-                if (!isMatch) return false;
-                if (s.isCompleted || s.isReported) return false; 
-                if (s.isPresent || s.isRetention || s.hasPendingIssue || s.isCriticallyLate || s.isSlaGap) return true;
-                if (s.shiftDateObj <= endOfToday) return true;
-                return false;
-            });
-            let status = 'SIN_ACTIVIDAD';
-            if (shifts.length > 0) {
-                status = 'PENDIENTE';
-                const priorityShift = shifts.find((s:any) => s.hasPendingIssue || s.isSlaGap);
-                const workingShift = shifts.find((s:any) => s.isPresent);
-                if (priorityShift) status = 'PRIORIDAD'; else if (workingShift) status = 'ACTIVO';
-            }
-            const lat = obj.lat || obj.latitude || -31.4201; const lng = obj.lng || obj.longitude || -64.1888;
-            return { id: obj.id, name: obj.name, lat, lng, status, shifts };
-        }).filter(Boolean);
-    }, [objectives, processedData]);
+interface Props { 
+    center: [number, number]; 
+    objectives: any[]; 
+    processedData: any[]; 
+    onAction: (action: string, id: string) => void; 
+    setMapInstance: (map: any) => void; 
+    onOpenResolution?: (shift: any) => void;
+    currentFilter?: string;
+}
+
+export default function OperacionesMap({ center, objectives, processedData, onAction, setMapInstance, onOpenResolution, currentFilter }: Props) {
+
+    const getObjectiveStatus = (objId: string) => {
+        const shifts = processedData.filter(s => s.objectiveId === objId);
+        const visibleList = shifts.filter(s => s.status !== 'CANCELED');
+
+        const totalReq = visibleList.length;
+        const totalPres = visibleList.filter(s => s.isPresent).length;
+        
+        const hasRetention = visibleList.some(s => s.isRetention);
+        const hasCritical = visibleList.some(s => s.isUnassigned || s.isSlaGap);
+        const hasActive = visibleList.some(s => s.isPresent);
+
+        let status: 'OK' | 'WARNING' | 'CRITICAL' | 'RETENTION' | 'ACTIVE' = 'OK';
+        if (hasCritical) status = 'CRITICAL';
+        else if (hasRetention) status = 'RETENTION';
+        else if (hasActive) status = 'ACTIVE';
+        else if (totalReq > 0 && totalPres === 0) status = 'WARNING';
+
+        return { status, req: totalReq, present: totalPres, guards: visibleList };
+    };
 
     return (
-        <MapContainer center={center} zoom={13} style={{ height: '100%', width: '100%' }} zoomControl={false}>
-            <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
-            <MapUpdater center={center} />
-            {mapMarkers.map((marker: any) => (
-                <Marker key={marker.id} position={[marker.lat, marker.lng]} icon={getIcon(marker.status)}>
-                    <Popup className="custom-popup" minWidth={350}>
-                        <div className="p-1 max-h-[600px] overflow-y-auto custom-scrollbar">
-                            <h4 className="font-black text-slate-800 flex items-center gap-2 border-b border-slate-200 pb-2 mb-2 text-xs uppercase tracking-wider"><Building2 size={12} className="text-slate-400"/> {marker.name}</h4>
-                            {marker.shifts.length === 0 ? (<div className="text-center py-2"><p className="text-[10px] text-slate-400 italic">Sin actividad operativa pendiente</p></div>) : (marker.shifts.map((s: any) => (<MapShiftCard key={s.id} shift={s} onAction={onAction} onOpenResolution={onOpenResolution} onOpenCheckout={onOpenCheckout} />)))}
-                        </div>
-                    </Popup>
-                </Marker>
-            ))}
+        <MapContainer center={center} zoom={13} style={{ height: '100%', width: '100%', background: '#f8fafc' }} ref={setMapInstance}>
+            <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png" />
+            <RecenterMap center={center} />
+            
+            {objectives.map(obj => {
+                if (!obj.lat || !obj.lng) return null;
+                const audit = getObjectiveStatus(obj.id);
+                const hasActivity = audit.guards.length > 0;
+
+                if (!hasActivity && currentFilter !== 'TODOS') return null;
+
+                // 🛑 FIX V29: LÓGICA DE CAPAS (Z-INDEX)
+                // Los números más altos se renderizan ENCIMA
+                let zIndex = 0;
+                if (audit.status === 'CRITICAL') zIndex = 1000;
+                else if (audit.status === 'RETENTION') zIndex = 900;
+                else if (audit.status === 'ACTIVE') zIndex = 800;
+                else if (audit.status === 'WARNING') zIndex = 700;
+                else zIndex = 0; // Grises al fondo
+
+                return (
+                    <Marker 
+                        key={obj.id} 
+                        position={[obj.lat, obj.lng]} 
+                        icon={createCustomIcon(audit.status, audit.present, audit.req)}
+                        zIndexOffset={zIndex} // <-- APLICACIÓN DEL FIX
+                    >
+                        <Tooltip direction="top" offset={[0, -42]} opacity={1} className="font-bold text-xs uppercase bg-slate-800 text-white border-0 shadow-lg px-2 py-1 rounded">
+                            {obj.name}
+                        </Tooltip>
+
+                        <Popup className="custom-popup">
+                            <div className="flex flex-col min-w-[280px]">
+                                <div className={`p-3 rounded-t-lg flex justify-between items-start ${audit.status === 'CRITICAL' ? 'bg-red-600 text-white' : audit.status === 'RETENTION' ? 'bg-orange-500 text-white' : audit.status === 'ACTIVE' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-white'}`}>
+                                    <div><h3 className="font-black text-sm uppercase flex items-center gap-2"><Building2 size={14}/> {obj.name}</h3><p className="text-[10px] opacity-90">{obj.address}</p></div>
+                                    <div className="text-right"><span className="text-xl font-black">{audit.present}/{audit.req}</span><p className="text-[9px] uppercase font-bold opacity-80">Presentes</p></div>
+                                </div>
+                                <div className="max-h-[250px] overflow-y-auto bg-white p-1">
+                                    {audit.guards.length === 0 ? <div className="text-center py-4 text-xs text-slate-400 italic">Sin actividad registrada en este filtro</div> : 
+                                    audit.guards.map((s: any) => (
+                                        <div key={s.id} className={`p-2 mb-1 rounded border-l-4 flex justify-between items-center group hover:bg-slate-50 transition-colors ${s.isUnassigned || s.isSlaGap ? 'border-red-500 bg-red-50/50' : s.isRetention ? 'border-orange-500 bg-orange-50/50' : s.isPresent ? 'border-emerald-500 bg-emerald-50/30' : 'border-slate-300'}`}>
+                                            <div className="flex-1"><p className="text-xs font-bold text-slate-800 flex items-center gap-1">{s.isUnassigned ? '🔴 VACANTE' : s.employeeName}{s.isRetention && <Clock size={10} className="text-orange-600 animate-pulse"/>}</p><p className="text-[10px] text-slate-500 font-mono">{s.shiftDateObj?.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})} - {s.endDateObj?.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</p></div>
+                                            <div className="flex gap-1">{(s.isUnassigned || s.isSlaGap || s.isRetention) && onOpenResolution ? (<button onClick={() => onOpenResolution(s)} className="p-1.5 bg-rose-100 text-rose-600 rounded hover:bg-rose-600 hover:text-white" title="Resolver"><Siren size={12}/></button>) : s.isPresent ? (<div className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded text-[9px] font-bold flex items-center gap-1"><CheckCircle size={10}/> ON</div>) : (<span className="text-[9px] text-slate-400 font-bold uppercase">{s.statusText}</span>)}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </Popup>
+                    </Marker>
+                );
+            })}
         </MapContainer>
     );
 }
