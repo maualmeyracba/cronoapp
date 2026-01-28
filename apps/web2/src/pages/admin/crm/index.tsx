@@ -20,13 +20,16 @@ import {
 
 const GOOGLE_MAPS_API_KEY = "AIzaSyA0Nl6OOJI8swRVQ8uzAKpPHdE2zvEscOE"; 
 
-// --- DATOS DE LA EMPRESA (PARA EL PDF) ---
+// --- DATOS DE LA EMPRESA ---
 const COMPANY_DATA = {
     name: "BACAR SA",
     cuit: "30-66813497-8",
     address: "Santiago del Estero 263 - Córdoba",
-    logo: "https://bacar.com.ar/wp-content/uploads/2020/06/logo-bacar.png" // Placeholder o logo real
+    logo: "https://bacar.com.ar/wp-content/uploads/2020/06/logo-bacar.png"
 };
+
+// ✅ HELPER GLOBAL (Movido aquí para evitar errores de referencia)
+const formatMoney = (val: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(val || 0);
 
 export default function CRMPage() {
     const router = useRouter();
@@ -64,188 +67,17 @@ export default function CRMPage() {
     // VISOR DE COTIZACIÓN
     const [viewingQuote, setViewingQuote] = useState<any>(null);
 
-    // ✅ CHECK DE CLIENTE EN URL (Redirección desde Cotizador)
+    // --- EFFECT: CARGA INICIAL ---
     useEffect(() => {
         if (router.query.clientId && clients.length > 0) {
             const target = clients.find(c => c.id === router.query.clientId);
             if (target) {
                 setSelectedClient(target);
                 setView('detail');
-                setActiveTab('COTIZACIONES'); // Abrir pestaña directamente
+                setActiveTab('COTIZACIONES'); 
             }
         }
     }, [router.query.clientId, clients]);
-
-    const irACotizador = () => {
-        if (!selectedClient || !selectedClient.id) {
-            toast.error("Error: Cliente no seleccionado.");
-            return;
-        }
-        router.push({
-            pathname: '/admin/cotizador',
-            query: { clientId: selectedClient.id }
-        });
-    };
-
-    // --- IMPRESIÓN PDF PROFESIONAL (ACTUALIZADO V19 - MULTI SERVICIO + PROYECCIÓN) ---
-    const printQuote = (quote: any) => {
-        const printWindow = window.open('', '_blank');
-        if (!printWindow) return toast.error("Permite los pop-ups para imprimir");
-
-        // 1. Renderizado de Servicios (Multi-Línea)
-        let serviciosHtml = '';
-        if (quote.params.servicios && Array.isArray(quote.params.servicios)) {
-            serviciosHtml = quote.params.servicios.map((s:any) => `
-                <div style="margin-bottom:8px; border-bottom:1px solid #000; padding-bottom:5px;">
-                    <strong style="color:#000; font-size:12px;">${s.nombre}</strong><br/>
-                    <span style="font-size:11px; color:#000;">
-                        ${s.cantidad} Puesto/s • ${s.horas} Hs Diarias • 
-                        ${quote.params.modalidad === 'evento' ? `Evento (${quote.params.diasEvento} días)` : `Mensual (${s.dias?.length || 7} días/sem)`}
-                    </span>
-                </div>
-            `).join('');
-        } else {
-            // Fallback Legacy
-            serviciosHtml = `<div style="color:red">Error: Formato de servicio antiguo.</div>`;
-        }
-
-        const itemsHtml = quote.items?.map((i:any) => `
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc;">${i.nombre}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc; text-align: right;">${i.tipo === 'fijo' ? 'Único (Amort.)' : 'Mensual'}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc; text-align: right; font-weight: bold;">$${new Intl.NumberFormat('es-AR').format(i.costo)}</td>
-            </tr>
-        `).join('') || '<tr><td colspan="3" style="padding:10px; color:#999; font-style:italic;">Sin adicionales operativos</td></tr>';
-
-        const mixHtml = quote.team?.map((t:any) => `
-            <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc; color: #333;"><strong>${t.cantidad}x</strong> ${t.categoria}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc; text-align: right; color: #666;">$${new Intl.NumberFormat('es-AR').format(t.basico)}</td>
-                <td style="padding: 8px; border-bottom: 1px solid #ccc; text-align: right; font-weight: bold;">$${new Intl.NumberFormat('es-AR').format(t.viatico)}</td>
-            </tr>
-        `).join('') || '';
-
-        // 3. Renderizado de PROYECCIÓN FINANCIERA (Mes a Mes)
-        let proyeccionHtml = '';
-        if (quote.proyeccion && Array.isArray(quote.proyeccion)) {
-            const rows = quote.proyeccion.map((p: any) => `
-                <tr>
-                    <td style="padding:6px; border-bottom:1px solid #ccc;">${p.mes}</td>
-                    <td style="padding:6px; border-bottom:1px solid #ccc; text-align:center;">${Math.round(p.horas)} hs</td>
-                    <td style="padding:6px; border-bottom:1px solid #ccc; text-align:right; font-family:monospace; font-weight:bold;">$${new Intl.NumberFormat('es-AR').format(p.venta)}</td>
-                </tr>
-            `).join('');
-
-            proyeccionHtml = `
-                <div class="section-title" style="margin-top:20px;">4. Proyección Financiera (Contrato ${quote.params.mesesContrato} Meses)</div>
-                <table style="width:100%; border:1px solid #000;">
-                    <thead style="background:#f0f0f0;">
-                        <tr>
-                            <th style="text-align:left; padding:5px; font-size:10px; color:#000;">PERIODO</th>
-                            <th style="text-align:center; padding:5px; font-size:10px; color:#000;">HORAS</th>
-                            <th style="text-align:right; padding:5px; font-size:10px; color:#000;">VALOR CUOTA (+IVA)</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-            `;
-        }
-
-        printWindow.document.write(`
-            <html>
-            <head>
-                <title>Cotización #${quote.id.slice(0,6)} - ${selectedClient.name}</title>
-                <style>
-                    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #000; max-width: 900px; margin: 0 auto; }
-                    /* HEADER ROJO */
-                    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #D32F2F; padding-bottom: 20px; margin-bottom: 40px; }
-                    .company-info h1 { font-size: 28px; color: #D32F2F; margin: 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 900; }
-                    .company-info p { font-size: 12px; color: #000; margin: 2px 0; font-weight: bold; }
-                    .meta-info { text-align: right; }
-                    .meta-info h2 { font-size: 18px; color: #000; margin: 0 0 5px 0; font-weight: 900; }
-                    .meta-info p { font-size: 12px; color: #000; margin: 2px 0; }
-                    
-                    .client-box { border: 1px solid #000; padding: 15px; margin-bottom: 30px; display: flex; justify-content: space-between; background: #fff; }
-                    .client-box div h3 { font-size: 10px; text-transform: uppercase; color: #D32F2F; margin: 0 0 5px 0; font-weight: bold; }
-                    .client-box div p { font-size: 14px; font-weight: bold; margin: 0; color: #000; }
-
-                    .section-title { font-size: 14px; font-weight: 900; text-transform: uppercase; color: #000; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 5px; margin-top:30px; }
-                    
-                    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 30px; }
-                    th { text-align: left; background: #000; padding: 10px; color: #fff; text-transform: uppercase; font-size: 10px; }
-                    
-                    .totals-container { display: flex; justify-content: flex-end; margin-top: 20px; }
-                    .totals-box { width: 300px; text-align: right; border-top: 3px solid #000; padding-top: 10px; }
-                    .totals-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 12px; color: #000; }
-                    .totals-row.final { border-top: 1px solid #000; margin-top: 10px; padding-top: 10px; font-size: 20px; font-weight: 900; color: #D32F2F; }
-                    
-                    .footer { margin-top: 60px; font-size: 10px; text-align: center; color: #000; border-top: 1px solid #000; padding-top: 20px; font-weight: bold; }
-                </style>
-            </head>
-            <body>
-                <div class="header">
-                    <div class="company-info">
-                        <h1>${COMPANY_DATA.name}</h1>
-                        <p>${COMPANY_DATA.address}</p>
-                        <p>CUIT: ${COMPANY_DATA.cuit}</p>
-                    </div>
-                    <div class="meta-info">
-                        <h2>PRESUPUESTO OFICIAL</h2>
-                        <p><strong>Nro:</strong> #${quote.id.slice(0,6).toUpperCase()}</p>
-                        <p><strong>Fecha:</strong> ${new Date(quote.createdAt?.seconds * 1000).toLocaleDateString()}</p>
-                        <p><strong>Vencimiento:</strong> 15 Días</p>
-                    </div>
-                </div>
-
-                <div class="client-box">
-                    <div>
-                        <h3>Cliente</h3>
-                        <p>${selectedClient.name}</p>
-                        <p style="font-size:12px; font-weight:normal;">${selectedClient.taxId || 'CUIT Pendiente'}</p>
-                    </div>
-                    <div style="text-align:right">
-                        <h3>Dirección del Objetivo</h3>
-                        <p>${quote.params.cliente || 'Sede Principal'}</p>
-                        <p style="font-size:12px; font-weight:normal;">${selectedClient.address || '-'}</p>
-                    </div>
-                </div>
-
-                <div class="section-title">1. Configuración del Servicio</div>
-                ${serviciosHtml}
-
-                <div class="section-title">2. Dotación Asignada (RRHH)</div>
-                <table>
-                    <thead><tr><th>Perfil Profesional</th><th style="text-align:right">Ref. Básico</th><th style="text-align:right">Ref. Viático</th></tr></thead>
-                    <tbody>${mixHtml}</tbody>
-                </table>
-
-                <div class="section-title">3. Recursos Tecnológicos y Operativos</div>
-                <table>
-                    <thead><tr><th>Ítem / Recurso</th><th style="text-align:right">Modalidad</th><th style="text-align:right">Costo Unitario</th></tr></thead>
-                    <tbody>${itemsHtml}</tbody>
-                </table>
-
-                ${proyeccionHtml}
-
-                <div class="totals-container">
-                    <div class="totals-box">
-                        <div class="totals-row"><span>Costo Financiero (${quote.params.diasPago} días)</span> <span>$${new Intl.NumberFormat('es-AR').format(quote.results.costoFinanciero || 0)}</span></div>
-                        <div class="totals-row"><span>Impuestos (IIBB+Tasas)</span> <span>Incluidos</span></div>
-                        <div class="totals-row final"><span>TOTAL CONTRATO</span> <span>$${new Intl.NumberFormat('es-AR').format(quote.results.valorTotalContrato || quote.results.precioVentaTotal)}</span></div>
-                        <p style="font-size:10px; color:#000; margin-top:5px; font-weight:bold;">+ IVA (21%)</p>
-                    </div>
-                </div>
-
-                <div class="footer">
-                    <p>Este documento es una propuesta comercial y no representa una factura fiscal.</p>
-                    <p>${COMPANY_DATA.name} - Seguridad Privada Inteligente</p>
-                </div>
-                <script>window.print();</script>
-            </body>
-            </html>
-        `);
-        printWindow.document.close();
-    };
 
     useEffect(() => {
         if (window.google && window.google.maps) {
@@ -293,6 +125,7 @@ export default function CRMPage() {
         if (activeTab === 'COTIZACIONES') loadQuotes(selectedClient.id);
     }, [selectedClient, activeTab]);
 
+    // --- DATA FETCHING ---
     const fetchClients = async () => {
         try {
             const q = query(collection(db, 'clients'), orderBy('name'));
@@ -326,16 +159,189 @@ export default function CRMPage() {
         try {
             const q = query(collection(db, 'quotes'), where('clientId', '==', clientId), orderBy('createdAt', 'desc'));
             const s = await getDocs(q);
-            const data = s.docs.map(d => ({ id: d.id, ...d.data() }));
-            setClientQuotes(data);
+            setClientQuotes(s.docs.map(d => ({ id: d.id, ...d.data() })));
         } catch (e: any) { 
             console.error("Error quotes", e); 
-            if(e.code === 'failed-precondition') {
-                toast.error("Falta índice en Firebase. Revisa consola F12.");
-            }
+            if(e.code === 'failed-precondition') toast.error("Falta índice en Firebase.");
         }
     };
 
+    const irACotizador = () => {
+        if (!selectedClient || !selectedClient.id) {
+            toast.error("Error: Cliente no seleccionado.");
+            return;
+        }
+        router.push({ pathname: '/admin/cotizador', query: { clientId: selectedClient.id } });
+    };
+
+    // --- 🖨️ PDF GENERATOR ENGINE (V20 - Corregido y Optimizado) ---
+    const printQuote = (quote: any) => {
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) return toast.error("Permite los pop-ups para imprimir");
+
+        // 1. Servicios
+        let serviciosHtml = '';
+        if (quote.params.servicios && Array.isArray(quote.params.servicios)) {
+            serviciosHtml = quote.params.servicios.map((s:any) => `
+                <div style="margin-bottom:8px; border-bottom:1px solid #000; padding-bottom:5px;">
+                    <strong style="color:#000; font-size:12px;">${s.nombre}</strong><br/>
+                    <span style="font-size:11px; color:#000;">
+                        ${s.cantidad} Puesto/s • ${s.horas} Hs Diarias • 
+                        ${quote.params.modalidad === 'evento' ? `Evento (${quote.params.diasEvento} días)` : `Mensual (${s.dias?.length || 7} días/sem)`}
+                    </span>
+                </div>
+            `).join('');
+        } else {
+            serviciosHtml = `<div style="color:red">Error: Formato de servicio antiguo.</div>`;
+        }
+
+        // 2. Items
+        const itemsHtml = quote.items?.map((i:any) => `
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc;">${i.nombre}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc; text-align: right;">${i.tipo === 'fijo' ? 'Único' : 'Mensual'}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="2" style="padding:10px; color:#000; font-style:italic;">Incluidos en tarifa plana</td></tr>';
+
+        // 3. Dotación (Sin Precio)
+        const mixHtml = quote.team?.map((t:any) => `
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc; color: #000;"><strong>${t.cantidad}x</strong> ${t.categoria}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ccc; text-align: right; color: #000;">Cobertura Garantizada</td>
+            </tr>
+        `).join('') || '';
+
+        // 4. Proyección Financiera
+        let proyeccionHtml = '';
+        if (quote.proyeccion && Array.isArray(quote.proyeccion)) {
+            const rows = quote.proyeccion.map((p: any) => `
+                <tr>
+                    <td style="padding:6px; border-bottom:1px solid #ccc;">${p.mes}</td>
+                    <td style="padding:6px; border-bottom:1px solid #ccc; text-align:center;">${Math.round(p.horas)} hs</td>
+                    <td style="padding:6px; border-bottom:1px solid #ccc; text-align:right; font-family:monospace; font-weight:bold;">${formatMoney(p.venta)}</td>
+                </tr>
+            `).join('');
+
+            proyeccionHtml = `
+                <div class="section-title" style="margin-top:20px;">4. Plan de Pagos y Proyección (Ajuste Inflacionario)</div>
+                <table style="width:100%; border:1px solid #000;">
+                    <thead style="background:#f0f0f0;">
+                        <tr>
+                            <th style="text-align:left; padding:5px; font-size:10px; color:#000;">PERIODO</th>
+                            <th style="text-align:center; padding:5px; font-size:10px; color:#000;">HORAS PRESTADAS</th>
+                            <th style="text-align:right; padding:5px; font-size:10px; color:#000;">VALOR CUOTA (+IVA)</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+        }
+
+        // Cálculos Header
+        const precioMes1 = quote.results.precioVentaMes1 || quote.proyeccion?.[0]?.venta || 0;
+        const totalHoras = quote.results.horasTotales || 0;
+        const mesesDivisor = quote.params.modalidad === 'evento' ? 1 : (quote.params.mesesContrato || 1);
+        const promedioMensual = (quote.results.valorTotalContrato || quote.results.precioVentaTotal) / mesesDivisor;
+
+        printWindow.document.write(`
+            <html>
+            <head>
+                <title>Cotización #${quote.id.slice(0,6)}</title>
+                <style>
+                    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #000; max-width: 900px; margin: 0 auto; }
+                    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #D32F2F; padding-bottom: 20px; margin-bottom: 40px; }
+                    .company h1 { font-size: 28px; color: #D32F2F; margin: 0; text-transform: uppercase; font-weight: 900; }
+                    .company p { font-size: 12px; color: #000; margin: 2px 0; font-weight: bold; }
+                    .client-box { border: 2px solid #000; padding: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; background: #fff; }
+                    .client-box h3 { margin:0 0 5px 0; font-size:10px; text-transform:uppercase; color:#D32F2F; }
+                    .client-box p { margin:0; font-size:14px; font-weight:bold; }
+                    .section-title { font-size: 14px; font-weight: 900; text-transform: uppercase; color: #000; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 5px; margin-top: 30px; }
+                    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px; }
+                    th { text-align: left; background: #000; color: #fff; padding: 8px; text-transform: uppercase; font-size: 10px; }
+                    .kpi-summary { display: flex; gap: 20px; margin-bottom: 30px; background: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #ccc; }
+                    .kpi-item { flex: 1; text-align: center; }
+                    .kpi-label { font-size: 10px; text-transform: uppercase; color: #666; font-weight: bold; display: block; margin-bottom: 5px; }
+                    .kpi-value { font-size: 18px; font-weight: 900; color: #D32F2F; display: block; }
+                    .footer { margin-top: 60px; font-size: 10px; text-align: center; color: #000; border-top: 1px solid #000; padding-top: 20px; font-weight: bold; }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <div class="company">
+                        <h1>${COMPANY_DATA.name}</h1>
+                        <p>${COMPANY_DATA.address}</p>
+                        <p>CUIT: ${COMPANY_DATA.cuit}</p>
+                    </div>
+                    <div style="text-align:right">
+                        <h2 style="margin:0; font-size:18px;">PROPUESTA COMERCIAL</h2>
+                        <p style="font-size:12px; margin:0">#${quote.id.slice(0,6).toUpperCase()}</p>
+                        <p style="font-size:12px; margin:0">Fecha: ${new Date(quote.createdAt?.seconds * 1000).toLocaleDateString()}</p>
+                    </div>
+                </div>
+
+                <div class="client-box">
+                    <div>
+                        <h3>Cliente</h3>
+                        <p>${selectedClient.name}</p>
+                        <p style="font-weight:normal; font-size:12px;">${selectedClient.taxId || 'CUIT Pendiente'}</p>
+                    </div>
+                    <div style="text-align:right">
+                        <h3>Objetivo</h3>
+                        <p>${quote.params.cliente}</p>
+                        <p style="font-weight:normal; font-size:12px;">${selectedClient.address || ''}</p>
+                    </div>
+                </div>
+
+                <div class="kpi-summary">
+                    <div class="kpi-item">
+                        <span class="kpi-label">Valor Cuota Inicial (Mes 1)</span>
+                        <span class="kpi-value">${formatMoney(precioMes1)}</span>
+                    </div>
+                    <div class="kpi-item">
+                        <span class="kpi-label">Promedio Mensual</span>
+                        <span class="kpi-value">${formatMoney(promedioMensual)}</span>
+                    </div>
+                    <div class="kpi-item">
+                        <span class="kpi-label">Total Horas Contrato</span>
+                        <span class="kpi-value" style="color:#000">${new Intl.NumberFormat('es-AR').format(totalHoras)} HS</span>
+                    </div>
+                </div>
+
+                <div class="section-title">1. Alcance del Servicio</div>
+                ${serviciosHtml}
+
+                <div class="section-title">2. Estructura Operativa</div>
+                <table>
+                    <thead><tr><th>Recurso</th><th style="text-align:right">Detalle</th></tr></thead>
+                    <tbody>
+                        ${mixHtml}
+                        ${itemsHtml}
+                    </tbody>
+                </table>
+
+                ${proyeccionHtml}
+
+                <div class="totals-container">
+                    <div class="totals-box">
+                        <div class="total-row"><span>Costo Financiero (${quote.params.diasPago} días)</span> <span>${formatMoney(quote.results.costoFinanciero || 0)}</span></div>
+                        <div class="total-row"><span>Impuestos (IIBB+Tasas)</span> <span>Incluidos</span></div>
+                        <div class="final-total"><span>TOTAL CONTRATO</span> <span>${formatMoney(quote.results.valorTotalContrato || quote.results.precioVentaTotal)}</span></div>
+                        <p style="font-size:10px; color:#000; margin-top:5px; font-weight:bold;">+ IVA (21%)</p>
+                    </div>
+                </div>
+
+                <div class="footer">
+                    <p>Este documento es una propuesta comercial y no representa una factura fiscal.</p>
+                    <p>${COMPANY_DATA.name} - Seguridad Privada Inteligente</p>
+                </div>
+                <script>window.print();</script>
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
+    };
+
+    // --- MAPS HELPERS ---
     const handleGoogleSearch = (text: string) => {
         const coords = extractCoordinates(text);
         if (coords) {
@@ -372,6 +378,7 @@ export default function CRMPage() {
         });
     };
 
+    // --- CRUD ---
     const handleSaveInfo = async () => {
         if (!infoForm.name) return toast.error('Nombre requerido');
         try {
@@ -436,7 +443,6 @@ export default function CRMPage() {
         setHistoryNote('');
     };
 
-    const formatMoney = (val: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(val || 0);
     const getStatusColor = (s: string) => s === 'INACTIVE' ? 'bg-slate-100 text-slate-500' : s === 'SUSPENDED' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700';
 
     return (
@@ -486,16 +492,14 @@ export default function CRMPage() {
                 {/* VISTA DETALLE */}
                 {view === 'detail' && selectedClient && (
                     <div className="flex flex-col lg:flex-row gap-6">
-                        <div className="w-full lg:w-1/3 bg-white p-6 rounded-3xl border h-fit">
-                            <div className="text-center mb-6">
-                                <div className="w-20 h-20 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-600"><Building2 size={40}/></div>
-                                <h2 className="text-xl font-black">{selectedClient.name}</h2>
-                                <p className="text-sm font-bold text-slate-500">{selectedClient.taxId || 'CUIT No Informado'}</p>
-                            </div>
-                            <div className="space-y-3 text-xs font-bold text-slate-600">
-                                <div className="p-3 bg-slate-50 rounded-xl flex gap-3"><Mail size={16}/> {selectedClient.email || '-'}</div>
-                                <div className="p-3 bg-slate-50 rounded-xl flex gap-3"><Phone size={16}/> {selectedClient.phone || '-'}</div>
-                                <div className="p-3 bg-slate-50 rounded-xl flex gap-3"><MapPin size={16}/> {selectedClient.city || selectedClient.address || '-'}</div>
+                        <div className="w-full lg:w-1/3 bg-white p-6 rounded-3xl border h-fit text-center">
+                            <div className="w-20 h-20 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-indigo-600"><Building2 size={40}/></div>
+                            <h2 className="text-xl font-black">{selectedClient.name}</h2>
+                            <p className="text-sm font-bold text-slate-500">{selectedClient.taxId || 'CUIT No Informado'}</p>
+                            <div className="mt-6 space-y-3 text-left">
+                                <div className="flex gap-3 items-center text-xs text-slate-600"><Mail size={14}/> {selectedClient.email || '-'}</div>
+                                <div className="flex gap-3 items-center text-xs text-slate-600"><Phone size={14}/> {selectedClient.phone || '-'}</div>
+                                <div className="flex gap-3 items-center text-xs text-slate-600"><MapPin size={14}/> {selectedClient.city || selectedClient.address || '-'}</div>
                             </div>
                         </div>
 
@@ -692,7 +696,7 @@ export default function CRMPage() {
             {/* ✅ MODAL DE VISUALIZACIÓN DE COTIZACIÓN (MEJORADO UX V3) */}
             {viewingQuote && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-0 overflow-hidden flex flex-col max-h-[90vh]">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-0 overflow-hidden flex flex-col max-h-[90vh]">
                         
                         {/* HEADER MODAL */}
                         <div className="p-6 border-b flex justify-between items-start bg-slate-50">
@@ -718,7 +722,7 @@ export default function CRMPage() {
                                 <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl text-right">
                                     <p className="text-[10px] font-bold text-emerald-500 uppercase mb-1">Valor Total Contrato</p>
                                     <p className="text-2xl font-black text-emerald-700">{formatMoney(viewingQuote.results?.valorTotalContrato || viewingQuote.results?.precioVentaTotal)}</p>
-                                    <p className="text-[10px] text-emerald-600 font-bold">+ IVA</p>
+                                    <p className="text-[9px] text-emerald-600 font-bold">+ IVA</p>
                                 </div>
                             </div>
 
@@ -732,10 +736,9 @@ export default function CRMPage() {
                                                 <div className="bg-white border w-8 h-8 flex items-center justify-center rounded-full text-xs font-bold shadow-sm">{t.cantidad}x</div>
                                                 <div>
                                                     <p className="text-sm font-bold text-slate-800">{t.categoria}</p>
-                                                    <p className="text-[10px] text-slate-500">Básico Ref: {formatMoney(t.basico)}</p>
+                                                    <p className="text-[10px] text-slate-500">Cobertura Operativa Garantizada</p>
                                                 </div>
                                             </div>
-                                            <span className="text-xs font-mono font-bold text-slate-600">{formatMoney(t.basico * t.cantidad)}</span>
                                         </div>
                                     ))}
                                 </div>
@@ -748,21 +751,11 @@ export default function CRMPage() {
                                     <div className="max-h-40 overflow-y-auto border rounded text-xs">
                                         <table className="w-full text-left">
                                             <thead className="bg-slate-50 font-bold sticky top-0"><tr><th className="p-2">Mes</th><th className="p-2 text-right">Valor Cuota</th></tr></thead>
-                                            <tbody>
-                                                {viewingQuote.proyeccion.map((p:any, i:number) => (
-                                                    <tr key={i}><td className="p-2 border-b">{p.mes}</td><td className="p-2 border-b text-right font-mono">{formatMoney(p.venta)}</td></tr>
-                                                ))}
-                                            </tbody>
+                                            <tbody>{viewingQuote.proyeccion.map((p:any, i:number) => (<tr key={i}><td className="p-2 border-b">{p.mes}</td><td className="p-2 border-b text-right font-mono">{formatMoney(p.venta)}</td></tr>))}</tbody>
                                         </table>
                                     </div>
                                 </div>
                             )}
-
-                            {/* FINANCIAL BREAKDOWN (ADMIN ONLY) */}
-                            <div className="bg-slate-900 text-slate-300 p-4 rounded-xl text-xs space-y-2">
-                                <div className="flex justify-between"><span>Costo Directo Operativo (Mes 1)</span> <span className="font-mono text-white">{formatMoney(viewingQuote.results?.costoDirectoTotal)}</span></div>
-                                <div className="flex justify-between"><span>Margen Aplicado ({viewingQuote.params?.margenDeseado}%)</span> <span className="font-mono text-emerald-400">+{formatMoney((viewingQuote.results?.precioVentaTotal || 0) - (viewingQuote.results?.costoDirectoTotal || 0))}</span></div>
-                            </div>
 
                         </div>
 

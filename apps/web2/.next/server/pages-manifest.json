@@ -2,9 +2,8 @@
   "/_app": "pages/_app.js",
   "/_error": "pages/_error.js",
   "/_document": "pages/_document.js",
-  "/test-schema": "pages/test-schema.js",
   "/admin/crm": "pages/admin/crm.js",
-  "/admin/planificacion": "pages/admin/planificacion.js",
+  "/admin/operaciones": "pages/admin/operaciones.js",
   "/admin/servicios": "pages/admin/servicios.js",
-  "/admin/reportes": "pages/admin/reportes.js"
+  "/admin/planificacion": "pages/admin/planificacion.js"
 }
